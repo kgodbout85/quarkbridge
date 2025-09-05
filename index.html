@@ -39,7 +39,7 @@
     <p class="sub">Cosmos Hub (cosmoshub-4) → Osmosis via <b>channel-141</b></p>
 
     <div class="row" style="margin-bottom:8px">
-      <button id="connectBtn">Connect Keplr</button>
+      <button id="connectBtn" type="button">Connect Keplr</button>
       <span id="status" class="status"></span>
     </div>
 
@@ -67,14 +67,14 @@
           <small>Available (~human): <span id="balHuman" class="mono">0.000000</span></small>
         </div>
         <div class="row">
-          <button id="btn50">50%</button>
-          <button id="btn75">75%</button>
-          <button id="btnMax">Max</button>
+          <button id="btn50" type="button">50%</button>
+          <button id="btn75" type="button">75%</button>
+          <button id="btnMax" type="button">Max</button>
         </div>
       </div>
 
       <div class="row" style="margin-top:10px">
-        <button id="sendBtn">Send via channel-141</button>
+        <button id="sendBtn" type="button">Send via channel-141</button>
       </div>
 
       <div class="row" style="margin-top:6px">
@@ -91,10 +91,9 @@
     // ---------- Config ----------
     const CHANNEL = "channel-141"; // Cosmos → Osmosis
     const DEFAULT_DECIMALS = 6;    // display assumption
-    const GAS_PRICE = 0.035;       // uatom per gas (a bit higher to avoid underfee)
-    const GAS_BUFFER = 1.6;        // 60% buffer on simulate
+    const GAS_PRICE = 0.035;       // uatom per gas
+    const GAS_BUFFER = 1.6;        // 60% over simulate
 
-    // Multiple browser-friendly RPCs; we try each until one works.
     const RPC_CANDIDATES = [
       "https://rpc.cosmos.directory/cosmoshub",
       "https://rpc-cosmoshub.blockapsis.com",
@@ -107,9 +106,10 @@
     let cosmosAddr = "";
     let osmoAddr   = "";
     let connectedRpc = "";
-    let queryClient = null;  // StargateClient for queries
+    let queryClient = null;           // StargateClient (queries)
+    let signingClient = null;         // SigningStargateClient (tx)
     let signer = null;
-    let balances = [];  // IBC (ibc/…) non-zero balances
+    let balances = [];                // ibc/* non-zero balances
     let inFlight = false;
 
     // ---------- UI ----------
@@ -207,33 +207,35 @@
       balHumanEl.textContent = toHuman(coin.amount);
     }
 
-    async function buildSigningClient() {
+    async function warmUpSigning() {
+      // create signing client once, *before* first send
       const { SigningStargateClient } = window.cosmjs;
-      // Slightly longer timeouts to avoid “must click twice” syndrome on slower RPCs
-      return await SigningStargateClient.connectWithSigner(connectedRpc, signer, {
+      signingClient = await SigningStargateClient.connectWithSigner(connectedRpc, signer, {
         broadcastTimeoutMs: 60_000,
         broadcastPollIntervalMs: 3_000,
       });
+      // touch the account/sequence so first real click doesn't have to
+      await signingClient.getSequence(cosmosAddr);
     }
 
     function wantRetry(errMsg) {
       const m = (errMsg || "").toLowerCase();
       return (
         m.includes("timeout") ||
-        m.includes("insufficient") && m.includes("fee") ||
+        (m.includes("insufficient") && m.includes("fee")) ||
         m.includes("out of gas") ||
         m.includes("account sequence")
       );
     }
 
     async function sendIbcWithRetries(coin, minimal, memo) {
-      const { SigningStargateClient } = window.cosmjs;
       let attempt = 0;
       let lastErr;
       while (attempt < 3) {
         attempt++;
         try {
-          const signing = await buildSigningClient();
+          // ensure client & fresh sequence
+          await signingClient.getSequence(cosmosAddr);
 
           const msg = {
             typeUrl: "/ibc.applications.transfer.v1.MsgTransfer",
@@ -249,7 +251,7 @@
           };
 
           statusEl.textContent = attempt === 1 ? "Simulating gas…" : `Simulating gas… (retry ${attempt})`;
-          const gasEst = await signing.simulate(cosmosAddr, [msg], memo || "");
+          const gasEst = await signingClient.simulate(cosmosAddr, [msg], memo || "");
           const gas = Math.ceil(gasEst * GAS_BUFFER);
           const fee = {
             gas: String(gas),
@@ -257,8 +259,7 @@
           };
 
           statusEl.textContent = attempt === 1 ? "Broadcasting…" : `Broadcasting… (retry ${attempt})`;
-          const res = await signing.signAndBroadcast(cosmosAddr, [msg], fee, memo || "");
-
+          const res = await signingClient.signAndBroadcast(cosmosAddr, [msg], fee, memo || "");
           if (res.code === 0) return res;
 
           const raw = res.rawLog || `code ${res.code}`;
@@ -268,7 +269,6 @@
           const em = e?.message || String(e);
           if (!wantRetry(em)) throw e;
           lastErr = e;
-          // small backoff
           await new Promise(r=>setTimeout(r, 1200 * attempt));
         }
       }
@@ -313,6 +313,10 @@
           throw new Error("All Cosmos Hub RPCs failed (CORS/offline).");
         })();
 
+        // Build signing client now (prevents first-click hang)
+        statusEl.textContent = "Preparing signer…";
+        await warmUpSigning();
+
         cosmosAddrEl.textContent = cosmosAddr;
         osmoAddrEl.textContent = osmoAddr;
         rpcUsedEl.textContent = connectedRpc;
@@ -351,7 +355,9 @@
         txWrap.style.display = "none";
         statusEl.textContent = "Preparing transaction…";
 
-        await ensureCosmjsReady();
+        // Make sure Keplr permissions are still live (Edge cases)
+        await window.keplr.enable(["cosmoshub-4", "osmosis-1"]);
+
         const res = await sendIbcWithRetries(coin, minimal, memoInput.value || "");
 
         statusEl.textContent = "✅ Sent!";
@@ -362,7 +368,7 @@
           txLink.textContent = hash;
         }
 
-        // Refresh this denom’s balance after a short delay
+        // Refresh the selected denom
         setTimeout(async () => {
           const fresh = await queryClient.getAllBalances(cosmosAddr);
           const updated = fresh.find(x => x.denom === coin.denom) || { amount:"0", denom: coin.denom };
