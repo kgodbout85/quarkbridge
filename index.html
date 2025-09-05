@@ -2,129 +2,182 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>QUARK Bridge — Minimal Connect Fix</title>
+  <title>QUARK Bridge</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    :root{ --bg:#0a0f1b; --card:#121a2b; --text:#e6ebff; --muted:#9aa4c7; --accent:#6fd0ff; --danger:#ff6b6b; --border:#1c2742; }
-    *{box-sizing:border-box}
-    html,body{height:100%}
-    body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial;background:var(--bg);color:var(--text);margin:0;display:flex;justify-content:center;align-items:center;padding:16px}
-    .card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:18px;width:100%;max-width:520px;box-shadow:0 8px 24px rgba(0,0,0,.25)}
-    h1{margin:0 0 10px;text-align:center}
-    .small{font-size:12px;color:var(--muted)}
-    input,button{width:100%;padding:10px;margin-top:8px;border-radius:12px;border:1px solid var(--border);background:#0f1627;color:var(--text);font-size:14px}
-    input::placeholder{color:#8aa0c7}
-    button{cursor:pointer;border:none;background:linear-gradient(90deg,#31a3ff,#7be3ff);color:#001018;font-weight:700}
-    .row{display:flex;gap:8px;flex-wrap:wrap}
-    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-    .hint{background:#0e1a2d;border:1px dashed var(--border);padding:10px;border-radius:12px;margin-top:8px}
-    a{color:var(--accent);text-decoration:none}
+    body {
+      font-family: Arial, sans-serif;
+      background: #f9fafb;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+    }
+    .card {
+      background: white;
+      padding: 2rem;
+      border-radius: 1rem;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+      max-width: 400px;
+      width: 100%;
+    }
+    h1 { text-align: center; margin-bottom: 1rem; }
+    input, button {
+      width: 100%;
+      padding: 0.75rem;
+      margin: 0.5rem 0;
+      border-radius: 0.5rem;
+      border: 1px solid #ddd;
+      font-size: 1rem;
+    }
+    button {
+      background: #4f46e5;
+      color: white;
+      border: none;
+      cursor: pointer;
+    }
+    button:hover { background: #4338ca; }
+    p.status { text-align: center; margin-top: 1rem; }
+    p.balance { text-align: center; margin-top: 0.5rem; color: #111827; font-weight: bold; }
   </style>
   <script src="https://unpkg.com/@cosmjs/stargate@0.31.2/build/index.min.js"></script>
 </head>
 <body>
   <div class="card">
     <h1>QUARK Bridge</h1>
+    <p style="text-align:center">
+      Send QUARK from <b>Cosmos Hub</b> → <b>Osmosis</b> using Keplr
+    </p>
 
-    <div id="iframeWarn" class="hint" style="display:none">
-      This page is inside a preview/iframe. <a id="openTop" href="#">Open in a new tab</a> so Keplr can connect.
-    </div>
+    <button id="connectBtn">Connect Keplr</button>
+    <p id="balance" class="balance" style="display:none"></p>
 
-    <div id="noKeplr" class="hint" style="display:none">
-      Keplr not detected. Install it and allow access on this site (HTTPS). In Chrome: Extensions → Keplr → Site access → “On all sites”.
-    </div>
+    <input id="amount" type="number" placeholder="Amount of QUARK" disabled />
+    <button id="bridgeBtn" disabled>Bridge</button>
 
-    <div class="row">
-      <button id="connectBtn" type="button">Connect Keplr</button>
-    </div>
-
-    <div id="status" class="small" style="margin-top:10px;text-align:center"></div>
-    <div id="log" class="small" style="margin-top:10px;white-space:pre-wrap;background:#0d1527;border:1px solid var(--border);border-radius:8px;padding:8px;display:none"></div>
+    <p id="status" class="status"></p>
+    <p id="warning" style="color:red; text-align:center;"></p>
   </div>
 
   <script>
-    // --- Minimal constants just for connect test ---
-    const RPC = "https://rpc.cosmoshub.strange.love";
-    const CHAINS = ["cosmoshub-4","osmosis-1"];
+    const denom = "factory/cosmos1n6asrjy9754q8y9jsxqf557zmsv3s3xa5m9eg5/quark";
+    const channel = "channel-141"; // Cosmos → Osmosis
 
-    const { SigningStargateClient, GasPrice } = window.cosmjs || {};
-    const $ = id => document.getElementById(id);
-    const statusEl = $("status");
-    const logEl = $("log");
+    let connected = false;
+    let fromAddress = "";
+    let toAddress = "";
+    let cosmosSigner;
+    let queryClient;
 
-    function log(msg){
-      console.log(msg);
-      logEl.style.display = "block";
-      logEl.textContent += (logEl.textContent ? "\n" : "") + msg;
+    const connectBtn = document.getElementById("connectBtn");
+    const bridgeBtn = document.getElementById("bridgeBtn");
+    const amountInput = document.getElementById("amount");
+    const statusEl = document.getElementById("status");
+    const warningEl = document.getElementById("warning");
+    const balanceEl = document.getElementById("balance");
+
+    // Check if Keplr API is available
+    if (!window.keplr) {
+      warningEl.textContent = "⚠️ Keplr not detected. Make sure you are opening this page in a browser where Keplr is installed and not as a local file (use a local server or host online).";
     }
 
-    // If inside iframe (e.g. GitHub preview), show open-in-new-tab
-    if (window.top !== window) {
-      $("iframeWarn").style.display = "block";
-      $("openTop").onclick = (e)=>{ e.preventDefault(); window.top.location.href = window.location.href; };
-    }
-
-    // Always keep the button clickable; never disable it.
-    $("connectBtn").addEventListener("click", async () => {
+    // Fetch and display QUARK balance
+    async function fetchBalance() {
       try {
-        log("connectBtn clicked");
+        if (!fromAddress) return;
+        queryClient = await window.cosmjs.StargateClient.connect("https://rpc.cosmoshub.strange.love");
+        const balance = await queryClient.getBalance(fromAddress, denom);
+        const quarkAmount = (Number(balance.amount) / 1_000_000).toFixed(6);
+        balanceEl.style.display = "block";
+        balanceEl.textContent = `Available: ${quarkAmount} QUARK`;
+      } catch (err) {
+        console.error("Error fetching balance:", err);
+        balanceEl.style.display = "block";
+        balanceEl.textContent = "Available: 0 QUARK";
+      }
+    }
+
+    connectBtn.onclick = async () => {
+      try {
         if (!window.keplr) {
-          $("noKeplr").style.display = "block";
-          statusEl.textContent = "Keplr not found on this page.";
+          alert("Keplr not found. Make sure it's installed and allowed to run on this page.");
           return;
         }
 
-        // Enable chains sequentially (more compatible)
-        for (const id of CHAINS) {
-          try {
-            await window.keplr.enable(id);
-            log(`enabled: ${id}`);
-          } catch (e) {
-            log(`enable failed for ${id}: ${e?.message || e}`);
-            statusEl.textContent = `Permission denied for ${id}. Check Keplr site access.`;
-            return;
-          }
-        }
+        await window.keplr.enable(["cosmoshub-4", "osmosis-1"]);
 
-        // Prefer modern API; fallback to legacy helper
-        const signer =
-          (window.keplr.getOfflineSignerAuto && await window.keplr.getOfflineSignerAuto("cosmoshub-4")) ||
-          (window.getOfflineSigner && window.getOfflineSigner("cosmoshub-4"));
+        cosmosSigner = window.getOfflineSigner("cosmoshub-4");
+        const cosmosAccounts = await cosmosSigner.getAccounts();
+        fromAddress = cosmosAccounts[0].address;
 
-        if (!signer) {
-          statusEl.textContent = "Could not obtain signer. Check Keplr permissions.";
-          log("no signer returned (getOfflineSignerAuto/getOfflineSigner)");
-          return;
-        }
+        const osmoSigner = window.getOfflineSigner("osmosis-1");
+        const osmoAccounts = await osmoSigner.getAccounts();
+        toAddress = osmoAccounts[0].address;
 
-        const accts = await signer.getAccounts();
-        const addr  = accts[0]?.address || "";
-        log(`cosmos address: ${addr || "(none)"}`);
+        connected = true;
+        connectBtn.disabled = true;
+        amountInput.disabled = false;
+        bridgeBtn.disabled = false;
+        statusEl.textContent = "✅ Keplr connected!";
+        warningEl.textContent = "";
 
-        // Quick client connect just to prove injection works
-        const gp = GasPrice.fromString("0.025uatom");
-        const client = await SigningStargateClient.connectWithSigner(RPC, signer, { gasPrice: gp });
-        const chainId = await client.getChainId();
-        log(`connected to RPC. chainId=${chainId}`);
-
-        statusEl.textContent = `✅ Keplr connected. Cosmos address: ${addr}`;
+        // Fetch QUARK balance after connecting
+        await fetchBalance();
       } catch (err) {
         console.error(err);
-        statusEl.textContent = "Error: " + (err?.message || err);
-        log("error: " + (err?.message || err));
+        statusEl.textContent = "❌ Error connecting: " + err.message;
       }
-    });
+    };
 
-    // Passive detector: if Keplr never appears, show a hint after 5s
-    (async ()=>{
-      const start = Date.now();
-      let found = false;
-      while (Date.now() - start < 5000) {
-        if (window.keplr) { found = true; break; }
-        await new Promise(r => setTimeout(r, 200));
+    bridgeBtn.onclick = async () => {
+      try {
+        const amount = parseFloat(amountInput.value);
+        if (!amount || amount <= 0) {
+          alert("Enter a valid amount of QUARK.");
+          return;
+        }
+
+        const client = await window.cosmjs.SigningStargateClient.connectWithSigner(
+          "https://rpc.cosmoshub.strange.love",
+          cosmosSigner
+        );
+
+        const msg = {
+          typeUrl: "/ibc.applications.transfer.v1.MsgTransfer",
+          value: {
+            sourcePort: "transfer",
+            sourceChannel: channel,
+            sender: fromAddress,
+            receiver: toAddress,
+            token: {
+              denom: denom,
+              amount: String(amount * 1_000_000),
+            },
+            timeoutHeight: {},
+            timeoutTimestamp: String((Date.now() + 600_000) * 1e6),
+          },
+        };
+
+        const fee = {
+          amount: [{ denom: "uatom", amount: "5000" }],
+          gas: "200000",
+        };
+
+        const result = await client.signAndBroadcast(fromAddress, [msg], fee);
+
+        if (result.code === 0) {
+          statusEl.textContent = "✅ Success! QUARK bridged to Osmosis.";
+          // Refresh balance after bridging
+          await fetchBalance();
+        } else {
+          statusEl.textContent = "❌ Failed: " + result.rawLog;
+        }
+      } catch (err) {
+        console.error(err);
+        statusEl.textContent = "❌ Error: " + err.message;
       }
-      if (!found) $("noKeplr").style.display = "block";
-    })();
+    };
   </script>
 </body>
 </html>
