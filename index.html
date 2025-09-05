@@ -5,119 +5,259 @@
   <title>QUARK Bridge</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    body { font-family: Arial, sans-serif; background: #f9fafb; display: flex; justify-content: center; align-items: center; height: 100vh; margin:0; }
-    .card { background: white; padding: 2rem; border-radius: 1rem; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-width: 400px; width: 100%; }
-    h1 { text-align: center; margin-bottom: 1rem; }
-    input, button { width: 100%; padding: 0.75rem; margin: 0.5rem 0; border-radius: 0.5rem; border: 1px solid #ddd; font-size: 1rem; }
-    button { background: #4f46e5; color: white; border: none; cursor: pointer; }
-    button:hover { background: #4338ca; }
-    p.status { text-align: center; margin-top: 1rem; }
+    :root{
+      --bg:#0a0f1b; --card:#121a2b; --text:#e6ebff; --muted:#9aa4c7; --accent:#6fd0ff; --danger:#ff6b6b; --border:#1c2742;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      background:var(--bg); color:var(--text); margin:0; display:flex; justify-content:center; align-items:center; padding:16px}
+    .card{background:var(--card); border:1px solid var(--border); border-radius:16px; padding:18px; width:100%; max-width:460px; box-shadow:0 8px 24px rgba(0,0,0,.25)}
+    h1{margin:0 0 10px; text-align:center}
+    .small{font-size:12px; color:var(--muted)}
+    input, button{width:100%; padding:10px; margin-top:8px; border-radius:12px; border:1px solid var(--border); background:#0f1627; color:var(--text); font-size:14px}
+    input::placeholder{color:#8aa0c7}
+    button{cursor:pointer; border:none; background:linear-gradient(90deg,#31a3ff,#7be3ff); color:#001018; font-weight:700}
+    button:disabled{opacity:.45; cursor:not-allowed}
+    .row{display:flex; gap:8px; flex-wrap:wrap}
+    .mono{font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
+    .danger{color:var(--danger)}
+    a{color:var(--accent); text-decoration:none}
+    .pill{display:inline-block; padding:2px 8px; border-radius:999px; border:1px solid var(--border); color:var(--muted); background:#0e1a2d}
   </style>
+  <!-- CosmJS (browser bundle) -->
   <script src="https://unpkg.com/@cosmjs/stargate@0.31.2/build/index.min.js"></script>
 </head>
 <body>
   <div class="card">
-    <h1>QUARK Bridge</h1>
-    <p style="text-align:center">Send QUARK from <b>Cosmos Hub</b> → <b>Osmosis</b> using Keplr</p>
-    <button id="connectBtn">Connect Keplr</button>
-    <input id="amount" type="number" placeholder="Amount of QUARK" disabled />
-    <button id="bridgeBtn" disabled>Bridge</button>
-    <p id="status" class="status"></p>
-    <p id="warning" style="color:red; text-align:center;"></p>
+    <h1>QUARK Bridge <span class="pill">Cosmos → Osmosis</span></h1>
+    <div class="small" style="text-align:center; margin-bottom:8px">
+      Send <b>QUARK</b> from <b>cosmoshub-4</b> to <b>osmosis-1</b> (channel-141)
+    </div>
+
+    <div class="row">
+      <button id="connectBtn">Connect Keplr</button>
+      <button id="refreshBtn" disabled>Refresh Balance</button>
+    </div>
+
+    <div id="addrBox" class="small" style="margin-top:6px"></div>
+
+    <div id="balanceBox" class="small" style="margin-top:8px">
+      Balance: <span class="mono" id="balMin">0</span> minimal ≈ <span class="mono" id="balWhole">0</span> QUARK
+    </div>
+
+    <div style="margin-top:12px">
+      <label class="small">Destination Osmosis address (can auto-fill from Keplr)</label>
+      <input id="toAddress" placeholder="osmo1..." />
+      <div class="row">
+        <button id="fillOsmoBtn" disabled>Use my Osmosis address</button>
+      </div>
+    </div>
+
+    <div style="margin-top:12px">
+      <label class="small">Amount (QUARK)</label>
+      <input id="amount" type="number" placeholder="e.g., 1.5" step="0.000001" min="0" disabled />
+      <div class="row">
+        <button id="halfBtn" disabled>50%</button>
+        <button id="threeQBtn" disabled>75%</button>
+        <button id="maxBtn" disabled>Max</button>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:12px">
+      <button id="bridgeBtn" disabled>Bridge</button>
+    </div>
+
+    <p id="status" class="small" style="text-align:center; margin-top:10px"></p>
+    <p id="warning" class="small danger" style="text-align:center;"></p>
+    <p id="explorer" class="small" style="text-align:center;"></p>
   </div>
 
   <script>
-    const denom = "factory/cosmos1n6asrjy9754q8y9jsxqf557zmsv3s3xa5m9eg5/quark";
-    const channel = "channel-141"; // Cosmos → Osmosis
+    // --- Config (keeping your denom) ---
+    // You said this works for you; keeping your factory denom:
+    const DENOM = "factory/cosmos1n6asrjy9754q8y9jsxqf557zmsv3s3xa5m9eg5/quark"; // QUARK on Cosmos
+    // If you ever need the ibc denom instead, switch to:
+    // const DENOM = "ibc/7B6EBFC446E50DFF981C994E207BFB398889706C2B0DF8A14D8B87F6C0E33A1A";
+    const CHANNEL = "channel-141"; // Cosmos → Osmosis
+    const DECIMALS = 6;
+    const RPC = "https://rpc.cosmoshub.strange.love"; // your working RPC
+    const FEE_DENOM = "uatom";
+    const DEFAULT_GAS_PRICE = "0.025uatom";
 
-    let connected = false;
-    let fromAddress = "";
-    let toAddress = "";
-    let cosmosSigner;
+    const $ = (id) => document.getElementById(id);
 
-    const connectBtn = document.getElementById("connectBtn");
-    const bridgeBtn = document.getElementById("bridgeBtn");
-    const amountInput = document.getElementById("amount");
-    const statusEl = document.getElementById("status");
-    const warningEl = document.getElementById("warning");
+    const connectBtn = $("connectBtn");
+    const refreshBtn = $("refreshBtn");
+    const fillOsmoBtn = $("fillOsmoBtn");
+    const bridgeBtn = $("bridgeBtn");
+    const amountInput = $("amount");
+    const toInput = $("toAddress");
+    const statusEl = $("status");
+    const warningEl = $("warning");
+    const balMinEl = $("balMin");
+    const balWholeEl = $("balWhole");
+    const addrBox = $("addrBox");
+    const explorerEl = $("explorer");
+    const halfBtn = $("halfBtn");
+    const threeQBtn = $("threeQBtn");
+    const maxBtn = $("maxBtn");
 
-    // Check if Keplr API is available
+    const { SigningStargateClient, StargateClient, GasPrice, calculateFee } = window.cosmjs;
+
+    let cosmosSigner, fromAddress = "", toAddress = "";
+    let queryClient, signingClient;
+    let balanceMinimal = 0n;
+
+    const toMinimal = (whole) => {
+      const n = Number(whole);
+      if (isNaN(n) || n <= 0) return 0n;
+      return BigInt(Math.floor(n * 10 ** DECIMALS));
+    };
+    const toWhole = (minimal) => {
+      if (!minimal) return "0";
+      return String(Number(minimal) / 10 ** DECIMALS);
+    };
+
+    const setStatus = (s) => { statusEl.textContent = s || ""; };
+    const setWarn = (s) => { warningEl.textContent = s || ""; };
+
+    const uiEnable = (enabled) => {
+      const controls = [refreshBtn, fillOsmoBtn, bridgeBtn, amountInput, halfBtn, threeQBtn, maxBtn];
+      controls.forEach(el => { el.disabled = !enabled; });
+    };
+
+    const loadBalance = async () => {
+      if (!queryClient || !fromAddress) return;
+      const b = await queryClient.getBalance(fromAddress, DENOM);
+      balanceMinimal = BigInt(b?.amount ?? "0");
+      balMinEl.textContent = balanceMinimal.toString();
+      balWholeEl.textContent = toWhole(balanceMinimal);
+    };
+
     if (!window.keplr) {
-      warningEl.textContent = "⚠️ Keplr not detected. Make sure you are opening this page in a browser where Keplr is installed and not as a local file (use a local server or host online).";
+      setWarn("⚠️ Keplr not detected. Open this page in a browser with Keplr installed (HTTPS or localhost).");
     }
 
     connectBtn.onclick = async () => {
       try {
-        if (!window.keplr) {
-          alert("Keplr not found. Make sure it's installed and allowed to run on this page.");
-          return;
-        }
-
-        await window.keplr.enable(["cosmoshub-4", "osmosis-1"]);
-        cosmosSigner = window.getOfflineSigner("cosmoshub-4");
+        setStatus("Connecting Keplr…"); setWarn(""); explorerEl.textContent = "";
+        await window.keplr.enable(["cosmoshub-4","osmosis-1"]);
+        cosmosSigner = await window.keplr.getOfflineSignerAuto("cosmoshub-4");
         const cosmosAccounts = await cosmosSigner.getAccounts();
-        fromAddress = cosmosAccounts[0].address;
+        fromAddress = cosmosAccounts[0]?.address || "";
 
-        const osmoSigner = window.getOfflineSigner("osmosis-1");
+        // optional: keep auto-fill available
+        const osmoSigner = await window.keplr.getOfflineSignerAuto("osmosis-1");
         const osmoAccounts = await osmoSigner.getAccounts();
-        toAddress = osmoAccounts[0].address;
+        toAddress = osmoAccounts[0]?.address || "";
+        toInput.value = toAddress;
 
-        connected = true;
+        const gp = GasPrice.fromString(DEFAULT_GAS_PRICE);
+        signingClient = await SigningStargateClient.connectWithSigner(RPC, cosmosSigner, { gasPrice: gp });
+        queryClient = await StargateClient.connect(RPC);
+
+        addrBox.innerHTML = `
+          <div>Cosmos: <span class="mono">${fromAddress}</span></div>
+          <div>Osmosis: <span class="mono">${toAddress || "—"}</span></div>
+        `;
+        await loadBalance();
+
         connectBtn.disabled = true;
         amountInput.disabled = false;
-        bridgeBtn.disabled = false;
-        statusEl.textContent = "✅ Keplr connected!";
-        warningEl.textContent = "";
+        uiEnable(true);
+        setStatus("✅ Keplr connected.");
       } catch (err) {
         console.error(err);
-        statusEl.textContent = "❌ Error connecting: " + err.message;
+        setStatus("❌ Error connecting: " + (err?.message || err));
       }
+    };
+
+    refreshBtn.onclick = async () => {
+      try { setStatus("Refreshing balance…"); await loadBalance(); setStatus("Ready."); }
+      catch (e){ console.error(e); setStatus("❌ Refresh failed: " + (e?.message || e)); }
+    };
+
+    fillOsmoBtn.onclick = async () => {
+      try {
+        await window.keplr.enable("osmosis-1");
+        const osmoSigner = await window.keplr.getOfflineSignerAuto("osmosis-1");
+        const accs = await osmoSigner.getAccounts();
+        toAddress = accs[0]?.address || "";
+        toInput.value = toAddress;
+        setStatus("Osmosis address set.");
+      } catch (e) {
+        console.error(e);
+        setStatus("❌ Could not get Osmosis address: " + (e?.message || e));
+      }
+    };
+
+    halfBtn.onclick = () => {
+      const amt = (balanceMinimal * 50n) / 100n;
+      amountInput.value = toWhole(amt);
+    };
+    threeQBtn.onclick = () => {
+      const amt = (balanceMinimal * 75n) / 100n;
+      amountInput.value = toWhole(amt);
+    };
+    maxBtn.onclick = () => {
+      amountInput.value = toWhole(balanceMinimal);
     };
 
     bridgeBtn.onclick = async () => {
       try {
-        const amount = parseFloat(amountInput.value);
-        if (!amount || amount <= 0) {
-          alert("Enter a valid amount of QUARK.");
+        setWarn(""); explorerEl.textContent = "";
+        const recv = (toInput.value || "").trim();
+        if (!recv.startsWith("osmo1")) {
+          setWarn("Destination must start with osmo1");
           return;
         }
-
-        const client = await window.cosmjs.SigningStargateClient.connectWithSigner(
-          "https://rpc.cosmoshub.strange.love",
-          cosmosSigner
-        );
+        const whole = Number((amountInput.value || "").trim());
+        if (!whole || whole <= 0) {
+          setWarn("Enter a valid QUARK amount.");
+          return;
+        }
+        const amountMin = toMinimal(whole);
+        if (amountMin <= 0n) { setWarn("Amount too small."); return; }
+        if (amountMin > balanceMinimal) { setWarn("Amount exceeds balance."); return; }
 
         const msg = {
           typeUrl: "/ibc.applications.transfer.v1.MsgTransfer",
           value: {
             sourcePort: "transfer",
-            sourceChannel: channel,
+            sourceChannel: CHANNEL,
             sender: fromAddress,
-            receiver: toAddress,
-            token: {
-              denom: denom,
-              amount: String(amount * 1_000_000),
-            },
+            receiver: recv,
+            token: { denom: DENOM, amount: amountMin.toString() },
             timeoutHeight: {},
-            timeoutTimestamp: String((Date.now() + 600_000) * 1e6),
+            timeoutTimestamp: String((Date.now() + 10 * 60 * 1000) * 1e6), // 10 min in ns
           },
         };
 
-        const fee = {
-          amount: [{ denom: "uatom", amount: "5000" }],
-          gas: "200000",
-        };
-
-        const result = await client.signAndBroadcast(fromAddress, [msg], fee);
-
-        if (result.code === 0) {
-          statusEl.textContent = "✅ Success! QUARK bridged to Osmosis.";
-        } else {
-          statusEl.textContent = "❌ Failed: " + result.rawLog;
+        // Prefer simulate (+30% buffer). Fallback to static fee.
+        let fee;
+        try {
+          setStatus("Simulating…");
+          const gasEst = await signingClient.simulate(fromAddress, [msg], "QUARK bridge");
+          const gasWanted = Math.ceil(gasEst * 1.3);
+          fee = calculateFee(gasWanted, GasPrice.fromString(DEFAULT_GAS_PRICE));
+        } catch {
+          fee = { amount: [{ denom: FEE_DENOM, amount: "12000" }], gas: "300000" };
         }
+
+        setStatus("Broadcasting…");
+        const res = await signingClient.signAndBroadcast(fromAddress, [msg], fee, "QUARK bridge");
+        if (res.code !== 0) {
+          setStatus("❌ Failed: " + (res.rawLog || ("code " + res.code)));
+          return;
+        }
+        setStatus("✅ Success!");
+        explorerEl.innerHTML = `View on Mintscan: <a target="_blank" rel="noreferrer" href="https://www.mintscan.io/cosmos/txs/${res.transactionHash}">${res.transactionHash}</a>`;
+
+        await loadBalance();
       } catch (err) {
         console.error(err);
-        statusEl.textContent = "❌ Error: " + err.message;
+        setStatus("❌ Error: " + (err?.message || err));
       }
     };
   </script>
