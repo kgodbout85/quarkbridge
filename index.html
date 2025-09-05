@@ -2,56 +2,29 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>QUARK Bridge</title>
+  <title>Cosmos → Osmosis (channel-141)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    body {
-      font-family: Arial, sans-serif;
-      background: #f9fafb;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      height: 100vh;
-      margin: 0;
-    }
-    .card {
-      background: white;
-      padding: 2rem;
-      border-radius: 1rem;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-      max-width: 420px;
-      width: 100%;
-    }
-    h1 { text-align: center; margin-bottom: 1rem; }
-    label { font-size: 0.9rem; color:#374151; }
-    input, select, button {
-      width: 100%;
-      padding: 0.75rem;
-      margin: 0.5rem 0;
-      border-radius: 0.5rem;
-      border: 1px solid #ddd;
-      font-size: 1rem;
-      background: #fff;
-    }
-    .row { display:flex; gap:.5rem; flex-wrap:wrap }
+    body { font-family: system-ui, Arial, sans-serif; background: #f7f7fb; margin: 0; display:flex; min-height:100vh; align-items:center; justify-content:center }
+    .card { background:#fff; width:100%; max-width:460px; padding:24px; border-radius:16px; box-shadow:0 10px 30px rgba(0,0,0,.08) }
+    h1 { margin:0 0 8px; font-size:20px; text-align:center }
+    p { margin:8px 0 }
+    label { font-size:14px; color:#555 }
+    input, select, button { width:100%; padding:12px; margin:6px 0 12px; border-radius:10px; border:1px solid #e3e3ee; font-size:16px; background:#fff }
+    .row { display:flex; gap:8px; }
     .row button { flex:1 }
-    button {
-      background: #4f46e5;
-      color: white;
-      border: none;
-      cursor: pointer;
-    }
-    button:disabled { opacity: .5; cursor: not-allowed; }
-    button:hover { background: #4338ca; }
-    p.status { text-align: center; margin-top: 1rem; }
-    p.warn { color:#b91c1c; text-align:center }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    .muted { color:#6b7280; font-size:.9rem }
+    button { background:#4f46e5; color:#fff; border:none; cursor:pointer }
+    button:hover { background:#4338ca }
+    button:disabled { opacity:.5; cursor:not-allowed }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace }
+    .muted { color:#6b7280; font-size:13px }
+    .status { text-align:center; min-height:22px; margin-top:8px }
+    .warn { color:#b91c1c; text-align:center }
+    .addr { background:#f3f4f6; padding:10px; border-radius:10px; font-size:14px }
   </style>
 
-  <!-- CosmJS UMD bundle (primary) -->
+  <!-- CosmJS UMD -->
   <script src="https://unpkg.com/@cosmjs/stargate@0.31.2/build/index.min.js"></script>
-  <!-- Fallback CDN if the first one is slow/blocked -->
   <script>
     (function ensureCosmjs(){
       setTimeout(function(){
@@ -60,34 +33,32 @@
           s.src = "https://cdn.jsdelivr.net/npm/@cosmjs/stargate@0.31.2/build/index.min.js";
           document.head.appendChild(s);
         }
-      }, 800);
+      }, 700);
     })();
   </script>
 </head>
 <body>
   <div class="card">
-    <h1>QUARK Bridge</h1>
-    <p style="text-align:center">
-      Bridge any Cosmos balance to <b>Osmosis</b> (channel-141) using Keplr
-    </p>
+    <h1>Bridge to Osmosis</h1>
+    <p class="muted" style="text-align:center">Cosmos → Osmosis via <b>channel-141</b></p>
 
     <button id="connectBtn">Connect Keplr</button>
 
-    <div id="addrBox" class="muted" style="display:none">
-      Cosmos: <span class="mono" id="fromAddr"></span><br/>
-      Osmosis: <span class="mono" id="toAddr"></span>
+    <div id="addrBox" style="display:none" class="addr">
+      <div>Cosmos: <span id="fromAddr" class="mono"></span></div>
+      <div>Osmosis: <span id="toAddr" class="mono"></span></div>
     </div>
 
     <div id="balanceUI" style="display:none">
-      <label for="denomSelect">Select a token (denom)</label>
+      <label for="denomSelect">Choose a Cosmos coin</label>
       <select id="denomSelect"></select>
 
       <div class="muted">
-        Available: <span class="mono" id="balWhole">0.000000</span>
-        (<span class="mono" id="balMinimal">0</span> minimal units)
+        Available: <span id="balWhole" class="mono">0.000000</span>
+        (<span id="balMinimal" class="mono">0</span> minimal)
       </div>
 
-      <label for="amount">Amount</label>
+      <label for="amount">Amount to send</label>
       <input id="amount" type="number" placeholder="e.g., 1.5" step="0.000001" min="0" disabled />
 
       <div class="row">
@@ -97,27 +68,28 @@
       </div>
     </div>
 
-    <button id="bridgeBtn" disabled>Bridge</button>
+    <button id="bridgeBtn" disabled>Send on channel-141</button>
 
     <p id="status" class="status"></p>
     <p id="warning" class="warn"></p>
   </div>
 
   <script>
-    // ---- Config ----
-    const CHANNEL   = "channel-141"; // Cosmos → Osmosis
-    const RPC       = "https://rpc.cosmoshub.strange.love";
-    const DEFAULT_DECIMALS = 6; // most Cosmos assets use 6
-    const QUARK_IBC = "ibc/7B6EBFC446E50DFF981C994E207BFB398889706C2B0DF8A14D8B87F6C0E33A1A";
+    // --- Config ---
+    const RPC = "https://rpc.cosmoshub.strange.love";
+    const CHANNEL = "channel-141";            // Cosmos → Osmosis
+    const DEFAULT_DECIMALS = 6;               // assume 6 if unknown
+    const FEE = { amount: [{ denom: "uatom", amount: "5000" }], gas: "200000" };
 
+    // State
     let fromAddress = "";
-    let toAddress   = "";
+    let toAddress = "";
     let cosmosSigner;
+    let allBalances = [];
+    let selectedDenom = "";
+    let selectedBalMinimal = 0n;
 
-    let allBalances = [];        // full list from getAllBalances() + explicit QUARK
-    let selectedDenom = "";      // user-selected denom
-    let selectedBalMinimal = 0n; // balance of selected denom (minimal units)
-
+    // UI
     const connectBtn  = document.getElementById("connectBtn");
     const bridgeBtn   = document.getElementById("bridgeBtn");
     const amountInput = document.getElementById("amount");
@@ -130,15 +102,15 @@
     const balanceUI   = document.getElementById("balanceUI");
     const balWholeEl  = document.getElementById("balWhole");
     const balMinEl    = document.getElementById("balMinimal");
-
     const btn50 = document.getElementById("btn50");
     const btn75 = document.getElementById("btn75");
     const btnMax = document.getElementById("btnMax");
 
     if (!window.keplr) {
-      warningEl.textContent = "⚠️ Keplr not detected. Open this page on HTTPS with Keplr installed/enabled.";
+      warningEl.textContent = "⚠️ Keplr not detected. Open this page over HTTPS with Keplr installed/enabled.";
     }
 
+    // Helpers (assume 6 decimals unless you add metadata logic)
     const toWhole = (minimal, dec = DEFAULT_DECIMALS) =>
       (Number(minimal || 0) / Math.pow(10, dec)).toFixed(6);
     const toMinimal = (whole, dec = DEFAULT_DECIMALS) =>
@@ -146,58 +118,38 @@
 
     async function ensureCosmjsReady() {
       const start = Date.now();
-      while (!window.cosmjs && Date.now() - start < 2500) {
+      while (!window.cosmjs && Date.now() - start < 3000) {
         await new Promise(r => setTimeout(r, 100));
       }
-      if (!window.cosmjs) throw new Error("CosmJS failed to load. Refresh or disable content blockers.");
+      if (!window.cosmjs) throw new Error("CosmJS failed to load.");
     }
 
-    // Fetch all non-zero balances, then explicitly query QUARK so it shows up even at 0.
     async function fetchAllBalances() {
       await ensureCosmjsReady();
       const { StargateClient } = window.cosmjs;
       const q = await StargateClient.connect(RPC);
-
-      const list = await q.getAllBalances(fromAddress) || [];
-
-      // Ensure QUARK is present (even at 0)
-      try {
-        const quarkBal = await q.getBalance(fromAddress, QUARK_IBC); // { denom, amount }
-        const existing = list.find(c => c.denom === QUARK_IBC);
-        if (quarkBal) {
-          if (!existing) list.push(quarkBal);
-          else existing.amount = quarkBal.amount;
-        }
-      } catch (e) {
-        console.debug("QUARK balance check error:", e?.message || e);
-      }
-
-      return list;
+      return await q.getAllBalances(fromAddress) || [];
     }
 
     function populateDenoms(list) {
       denomSelect.innerHTML = "";
-
-      // Sort: IBC/factory first, then alphabetical
+      // sort by ibc/factory first, then alpha
       list.sort((a,b) => {
-        const aKey = (a.denom.startsWith("ibc/") || a.denom.startsWith("factory/")) ? "0"+a.denom : "1"+a.denom;
-        const bKey = (b.denom.startsWith("ibc/") || b.denom.startsWith("factory/")) ? "0"+b.denom : "1"+b.denom;
-        return aKey.localeCompare(bKey);
+        const pa = (a.denom.startsWith("ibc/") || a.denom.startsWith("factory/")) ? "0" : "1";
+        const pb = (b.denom.startsWith("ibc/") || b.denom.startsWith("factory/")) ? "0" : "1";
+        return (pa + a.denom).localeCompare(pb + b.denom);
       });
 
       for (const c of list) {
         const opt = document.createElement("option");
         opt.value = c.denom;
-        opt.textContent = c.denom === QUARK_IBC ? `QUARK (${c.denom})` : c.denom;
+        opt.textContent = `${c.denom} — ${toWhole(c.amount)} (~${c.amount} minimal)`;
         denomSelect.appendChild(opt);
       }
 
-      if (list.find(c => c.denom === QUARK_IBC)) {
-        denomSelect.value = QUARK_IBC;
-      } else if (list.length > 0) {
+      if (list.length > 0) {
         denomSelect.value = list[0].denom;
       }
-
       updateSelectedBalance();
     }
 
@@ -207,9 +159,12 @@
       selectedBalMinimal = BigInt(coin.amount || "0");
       balMinEl.textContent = selectedBalMinimal.toString();
       balWholeEl.textContent = toWhole(selectedBalMinimal);
-      amountInput.disabled = false;
-      btn50.disabled = btn75.disabled = btnMax.disabled = false;
-      bridgeBtn.disabled = false;
+
+      const enable = selectedBalMinimal > 0n;
+      amountInput.disabled = !enable;
+      btn50.disabled = btn75.disabled = btnMax.disabled = !enable;
+      bridgeBtn.disabled = !enable;
+      if (!enable) amountInput.value = "";
     }
 
     btn50.onclick = () => {
@@ -220,13 +175,14 @@
       const threeQ = (selectedBalMinimal * 75n) / 100n;
       amountInput.value = toWhole(threeQ);
     };
-    btnMax.onclick = () => { amountInput.value = toWhole(selectedBalMinimal); };
-
+    btnMax.onclick = () => {
+      amountInput.value = toWhole(selectedBalMinimal);
+    };
     denomSelect.onchange = updateSelectedBalance;
 
     connectBtn.onclick = async () => {
       try {
-        if (!window.keplr) { alert("Keplr not found. Make sure it's installed and allowed on this site."); return; }
+        if (!window.keplr) return alert("Keplr not found. Install/enable Keplr.");
 
         // Enable both chains
         await window.keplr.enable(["cosmoshub-4", "osmosis-1"]);
@@ -240,44 +196,42 @@
         toAddress = osmoAccounts[0]?.address || "";
 
         connectBtn.disabled = true;
-        statusEl.textContent = "✅ Keplr connected!";
-        warningEl.textContent = "";
+        statusEl.textContent = "✅ Connected";
 
-        // Show addresses
+        // Show addrs
         fromAddrEl.textContent = fromAddress || "—";
         toAddrEl.textContent = toAddress || "—";
         addrBox.style.display = "block";
 
-        // Fetch balances and populate UI
-        statusEl.textContent = "Fetching balances…";
-        allBalances = await fetchAllBalances();
-        if (!allBalances.length) {
-          statusEl.textContent = "No balances found on Cosmos for this address.";
+        // Balances
+        statusEl.textContent = "Loading balances…";
+        allBalances = (await fetchAllBalances()).filter(c => BigInt(c.amount || "0") > 0n);
+        balanceUI.style.display = "block";
+        if (allBalances.length === 0) {
+          statusEl.textContent = "No non-zero balances on Cosmos.";
         } else {
+          populateDenoms(allBalances);
           statusEl.textContent = "Balances loaded.";
         }
-        balanceUI.style.display = "block";
-        populateDenoms(allBalances);
-      } catch (err) {
-        console.error(err);
-        statusEl.textContent = "❌ Error connecting: " + (err?.message || err);
+      } catch (e) {
+        console.error(e);
+        statusEl.textContent = "❌ Connect error: " + (e?.message || e);
       }
     };
 
     bridgeBtn.onclick = async () => {
       try {
         const amt = Number((amountInput.value || "").trim());
-        if (!amt || amt <= 0) { alert("Enter a valid amount."); return; }
+        if (!amt || amt <= 0) return alert("Enter a valid amount.");
         const minimal = toMinimal(amt);
 
         if (BigInt(minimal) > selectedBalMinimal) {
-          alert("Amount exceeds available balance.");
-          return;
+          return alert("Amount exceeds available balance.");
         }
 
         await ensureCosmjsReady();
         const { SigningStargateClient } = window.cosmjs || {};
-        if (!SigningStargateClient) throw new Error("CosmJS (SigningStargateClient) unavailable");
+        if (!SigningStargateClient) throw new Error("SigningStargateClient unavailable.");
 
         const client = await SigningStargateClient.connectWithSigner(RPC, cosmosSigner);
 
@@ -290,30 +244,26 @@
             receiver: toAddress,
             token: { denom: selectedDenom, amount: minimal },
             timeoutHeight: {},
-            timeoutTimestamp: String((Date.now() + 10 * 60 * 1000) * 1e6),
+            timeoutTimestamp: String((Date.now() + 10 * 60 * 1000) * 1e6), // +10 min in ns
           },
         };
 
-        // static fee (uatom)
-        const fee = { amount: [{ denom: "uatom", amount: "5000" }], gas: "200000" };
-
         statusEl.textContent = "Broadcasting…";
-        const res = await client.signAndBroadcast(fromAddress, [msg], fee);
+        const res = await client.signAndBroadcast(fromAddress, [msg], FEE);
 
         if (res.code === 0) {
-          statusEl.textContent = "✅ Success! Bridged to Osmosis.";
-          // Refresh the balances after a short delay
+          statusEl.textContent = "✅ Sent to Osmosis. Refreshing balances…";
           setTimeout(async () => {
-            allBalances = await fetchAllBalances();
+            allBalances = (await fetchAllBalances()).filter(c => BigInt(c.amount || "0") > 0n);
             populateDenoms(allBalances);
             statusEl.textContent = "Updated balances.";
           }, 2500);
         } else {
           statusEl.textContent = "❌ Failed: " + (res.rawLog || ("code " + res.code));
         }
-      } catch (err) {
-        console.error(err);
-        statusEl.textContent = "❌ Error: " + (err?.message || err);
+      } catch (e) {
+        console.error(e);
+        statusEl.textContent = "❌ Error: " + (e?.message || e);
       }
     };
   </script>
