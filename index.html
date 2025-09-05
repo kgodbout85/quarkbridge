@@ -22,7 +22,10 @@
       max-width: 400px;
       width: 100%;
     }
-    h1 { text-align: center; margin-bottom: 1rem; }
+    h1 {
+      text-align: center;
+      margin-bottom: 1rem;
+    }
     input, button {
       width: 100%;
       padding: 0.75rem;
@@ -37,90 +40,48 @@
       border: none;
       cursor: pointer;
     }
-    button:hover { background: #4338ca; }
-    p.status { text-align: center; margin-top: 1rem; }
-    p.balance { text-align: center; margin-top: 0.5rem; color: #111827; font-weight: bold; }
+    button:hover {
+      background: #4338ca;
+    }
+    p.status {
+      text-align: center;
+      margin-top: 1rem;
+    }
   </style>
-  <!-- CosmJS UMD bundle -->
   <script src="https://unpkg.com/@cosmjs/stargate@0.31.2/build/index.min.js"></script>
 </head>
 <body>
   <div class="card">
     <h1>QUARK Bridge</h1>
-    <p style="text-align:center">
-      Send QUARK from <b>Cosmos Hub</b> → <b>Osmosis</b> using Keplr
-    </p>
-
+    <p style="text-align:center">Send QUARK from <b>Cosmos Hub</b> → <b>Osmosis</b> using Keplr</p>
     <button id="connectBtn">Connect Keplr</button>
-    <p id="balance" class="balance" style="display:none"></p>
-
     <input id="amount" type="number" placeholder="Amount of QUARK" disabled />
     <button id="bridgeBtn" disabled>Bridge</button>
-
     <p id="status" class="status"></p>
-    <p id="warning" style="color:red; text-align:center;"></p>
   </div>
 
   <script>
-    // --- Config ---
-    const denom   = "ibc/7B6EBFC446E50DFF981C994E207BFB398889706C2B0DF8A14D8B87F6C0E33A1A"; // QUARK on Cosmos (IBC)
+    const denom = "factory/cosmos1n6asrjy9754q8y9jsxqf557zmsv3s3xa5m9eg5/quark";
     const channel = "channel-141"; // Cosmos → Osmosis
-    const RPC     = "https://rpc.cosmoshub.strange.love";
-    const DECIMALS = 6; // QUARK has 6 decimals on-chain
 
+    let connected = false;
     let fromAddress = "";
-    let toAddress   = "";
+    let toAddress = "";
     let cosmosSigner;
 
-    const connectBtn  = document.getElementById("connectBtn");
-    const bridgeBtn   = document.getElementById("bridgeBtn");
+    const connectBtn = document.getElementById("connectBtn");
+    const bridgeBtn = document.getElementById("bridgeBtn");
     const amountInput = document.getElementById("amount");
-    const statusEl    = document.getElementById("status");
-    const warningEl   = document.getElementById("warning");
-    const balanceEl   = document.getElementById("balance");
-
-    if (!window.keplr) {
-      warningEl.textContent = "⚠️ Keplr not detected. Open this page on HTTPS with Keplr installed/enabled.";
-    }
-
-    function toWhole(minimalStr) {
-      const n = Number(minimalStr || "0");
-      return (n / Math.pow(10, DECIMALS)).toFixed(6);
-    }
-    function toMinimal(wholeNumber) {
-      const n = Number(wholeNumber);
-      return String(Math.round(n * Math.pow(10, DECIMALS)));
-    }
-
-    // Fetch & display QUARK balance (read-only client; no GasPrice used)
-    async function fetchQuarkBalance() {
-      try {
-        if (!fromAddress) return;
-        const { StargateClient } = window.cosmjs || {};
-        if (!StargateClient) throw new Error("CosmJS not loaded");
-        const q = await StargateClient.connect(RPC);
-        const bal = await q.getBalance(fromAddress, denom);
-        const amtMinimal = bal?.amount ?? "0";
-        balanceEl.style.display = "block";
-        balanceEl.textContent = `Available: ${toWhole(amtMinimal)} QUARK`;
-      } catch (e) {
-        console.error("Balance fetch error:", e);
-        balanceEl.style.display = "block";
-        balanceEl.textContent = "Available: 0.000000 QUARK";
-      }
-    }
+    const statusEl = document.getElementById("status");
 
     connectBtn.onclick = async () => {
       try {
         if (!window.keplr) {
-          alert("Keplr not found. Make sure it's installed and allowed on this site.");
+          alert("Please install the Keplr extension.");
           return;
         }
 
-        // Enable both chains
         await window.keplr.enable(["cosmoshub-4", "osmosis-1"]);
-
-        // Legacy API (you had this working)
         cosmosSigner = window.getOfflineSigner("cosmoshub-4");
         const cosmosAccounts = await cosmosSigner.getAccounts();
         fromAddress = cosmosAccounts[0].address;
@@ -129,14 +90,11 @@
         const osmoAccounts = await osmoSigner.getAccounts();
         toAddress = osmoAccounts[0].address;
 
-        connectBtn.disabled  = true;
+        connected = true;
+        connectBtn.disabled = true;
         amountInput.disabled = false;
-        bridgeBtn.disabled   = false;
+        bridgeBtn.disabled = false;
         statusEl.textContent = "✅ Keplr connected!";
-        warningEl.textContent = "";
-
-        // Fetch QUARK balance after connecting
-        await fetchQuarkBalance();
       } catch (err) {
         console.error(err);
         statusEl.textContent = "❌ Error connecting: " + err.message;
@@ -151,8 +109,10 @@
           return;
         }
 
-        const { SigningStargateClient } = window.cosmjs || {};
-        const client = await SigningStargateClient.connectWithSigner(RPC, cosmosSigner);
+        const client = await window.cosmjs.SigningStargateClient.connectWithSigner(
+          "https://rpc.cosmoshub.strange.love",
+          cosmosSigner
+        );
 
         const msg = {
           typeUrl: "/ibc.applications.transfer.v1.MsgTransfer",
@@ -163,10 +123,10 @@
             receiver: toAddress,
             token: {
               denom: denom,
-              amount: toMinimal(amount),
+              amount: String(amount * 1_000_000), // QUARK has 6 decimals
             },
             timeoutHeight: {},
-            timeoutTimestamp: String((Date.now() + 600_000) * 1e6), // +10 min in ns
+            timeoutTimestamp: String((Date.now() + 600_000) * 1e6), // 10 min
           },
         };
 
@@ -179,8 +139,6 @@
 
         if (result.code === 0) {
           statusEl.textContent = "✅ Success! QUARK bridged to Osmosis.";
-          // Refresh balance after sending
-          await fetchQuarkBalance();
         } else {
           statusEl.textContent = "❌ Failed: " + result.rawLog;
         }
