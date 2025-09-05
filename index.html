@@ -22,6 +22,7 @@
     .grid { display:grid; grid-template-columns: 1fr 1fr; gap:12px }
     small { color:#aab3da }
     a.link { color:#9fb2ff; text-decoration: underline }
+    .badge { background:#223066; border:1px solid #2d3c7a; padding:2px 8px; border-radius:999px; font-size:11px; margin-left:6px; color:#bcd0ff }
   </style>
 
   <!-- CosmJS UMD (primary + fallback). If blocked, we ESM-import in boot(). -->
@@ -56,13 +57,13 @@
           <select id="denomSelect"></select>
         </div>
         <div>
-          <label for="amount">Amount (human, ~6 dp)</label>
+          <label for="amount">Amount</label>
           <input id="amount" type="number" placeholder="e.g., 1.5" step="0.000001" min="0" />
         </div>
       </div>
 
       <div style="margin-top:6px">
-        <small>Available (human): <span id="balHuman" class="mono">0.000000</span></small>
+        <small>Available: <span id="balHuman" class="mono">0.000000</span><span id="quarkBadge" class="badge" style="display:none">QUARK</span></small>
       </div>
 
       <div class="row" style="margin-top:6px">
@@ -126,6 +127,7 @@
     const denomSelect = document.getElementById("denomSelect");
     const amountInput = document.getElementById("amount");
     const balHumanEl  = document.getElementById("balHuman");
+    const quarkBadge  = document.getElementById("quarkBadge");
     const memoInput   = document.getElementById("memo");
     const btn50 = document.getElementById("btn50");
     const btn75 = document.getElementById("btn75");
@@ -235,7 +237,7 @@
         const isQuark = c.denom === QUARK_IBC;
         const opt = document.createElement("option");
         opt.value = c.denom;
-        opt.textContent = `${isQuark ? "QUARK — " : ""}${c.denom} — ${toHuman(c.amount)}`;
+        opt.textContent = `${isQuark ? "QUARK • " : ""}${c.denom} — ${toHuman(c.amount)}`;
         denomSelect.appendChild(opt);
       }
       if (balances.length > 0) {
@@ -250,6 +252,7 @@
     function updateSelected() {
       const coin = findSelectedCoin();
       balHumanEl.textContent = toHuman(coin.amount);
+      quarkBadge.style.display = coin.denom === QUARK_IBC ? "inline-block" : "none";
     }
     async function warmUpSigning() {
       const { SigningStargateClient } = window.cosmjs;
@@ -389,7 +392,7 @@
         if (!human || human <= 0) return alert("Enter a valid amount.");
 
         const coin = findSelectedCoin();
-        const minimal = toMinimal(human); // still uses minimal for precision, just not displayed
+        const minimal = toMinimal(human); // internal units only; never displayed
         if (BigInt(minimal) > BigInt(coin.amount || "0")) {
           return alert("Amount exceeds available balance.");
         }
@@ -410,7 +413,7 @@
           txLink.textContent = hash;
         }
 
-        // Refresh selected denom (human display only)
+        // Refresh selected denom (human display)
         setTimeout(async () => {
           const fresh = await queryClient.getAllBalances(cosmosAddr);
           const updated = fresh.find(x => x.denom === coin.denom) || { amount:"0", denom: coin.denom };
