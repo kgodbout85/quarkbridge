@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     body { font-family: system-ui, Arial, sans-serif; background:#f7f7fb; margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center }
-    .card { background:#fff; width:100%; max-width:500px; padding:24px; border-radius:16px; box-shadow:0 10px 30px rgba(0,0,0,.08) }
+    .card { background:#fff; width:100%; max-width:520px; padding:24px; border-radius:16px; box-shadow:0 10px 30px rgba(0,0,0,.08) }
     h1 { margin:0 0 8px; font-size:20px; text-align:center }
     .muted { color:#6b7280; font-size:13px }
     .addr { background:#f3f4f6; padding:10px; border-radius:10px; font-size:14px; margin:10px 0 }
@@ -22,17 +22,22 @@
     .warn { color:#b91c1c; text-align:center }
   </style>
 
-  <!-- CosmJS UMD -->
-  <script src="https://unpkg.com/@cosmjs/stargate@0.31.2/build/index.min.js"></script>
+  <!-- Try UMD (unpkg, then jsDelivr). If both fail to set window.cosmjs, we’ll ESM-import as a fallback. -->
   <script>
-    // Fallback loader (some adblockers block unpkg)
-    setTimeout(() => {
-      if (!window.cosmjs) {
+    (function loadCosmjsUMD() {
+      function add(src) {
         const s = document.createElement("script");
-        s.src = "https://cdn.jsdelivr.net/npm/@cosmjs/stargate@0.31.2/build/index.min.js";
+        s.src = src;
+        s.async = true;
         document.head.appendChild(s);
       }
-    }, 700);
+      add("https://unpkg.com/@cosmjs/stargate@0.31.2/build/index.min.js");
+      setTimeout(() => {
+        if (!window.cosmjs) {
+          add("https://cdn.jsdelivr.net/npm/@cosmjs/stargate@0.31.2/build/index.min.js");
+        }
+      }, 700);
+    })();
   </script>
 </head>
 <body>
@@ -77,7 +82,7 @@
     const RPC = "https://rpc.cosmoshub.strange.love"; // Cosmos Hub RPC
     const CHANNEL = "channel-141";                     // Cosmos → Osmosis
     const DEFAULT_DECIMALS = 6;                        // display assumption if no metadata
-    const GAS_PRICE = 0.025;                           // uatom per gas (no fromString)
+    const GAS_PRICE = 0.025;                           // uatom per gas (simple calc)
 
     // State
     let fromAddress = "";
@@ -114,11 +119,24 @@
       String(Math.round(Number(whole) * Math.pow(10, dec)));
 
     async function ensureCosmjsReady() {
+      // Wait for UMD first
       const start = Date.now();
-      while (!window.cosmjs && Date.now() - start < 4000) {
+      while (!window.cosmjs && Date.now() - start < 2500) {
         await new Promise(r => setTimeout(r, 100));
       }
-      if (!window.cosmjs) throw new Error("CosmJS failed to load. Refresh or disable blockers.");
+      if (window.cosmjs) return;
+
+      // Fallback: dynamic ESM import; attach to window.cosmjs for the rest of the code
+      try {
+        const mod = await import("https://esm.sh/@cosmjs/stargate@0.31.2?bundle");
+        // The ESM exposes named exports; mirror what we need into a faux "cosmjs" namespace.
+        window.cosmjs = {
+          StargateClient: mod.StargateClient,
+          SigningStargateClient: mod.SigningStargateClient,
+        };
+      } catch (e) {
+        throw new Error("CosmJS failed to load (UMD+ESM). Check blockers/CSP.");
+      }
     }
 
     async function fetchAllBalances() {
@@ -233,12 +251,12 @@
             sender: fromAddress,
             receiver: toAddress,
             token: { denom: selectedDenom, amount: minimal },
-            timeoutHeight: {}, // rely on timestamp
+            timeoutHeight: {},
             timeoutTimestamp: String((Date.now() + 10 * 60 * 1000) * 1e6), // +10 min in ns
           },
         };
 
-        // --- Fee: simulate then compute amount at GAS_PRICE uatom per gas
+        // Simulate gas and compute fee (uatom)
         const gasEst = await client.simulate(fromAddress, [msg], "");
         const gas = Math.ceil(gasEst * 1.3); // 30% buffer
         const fee = {
