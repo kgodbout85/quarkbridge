@@ -2,28 +2,27 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>ICS20 Balances — Cosmos Hub</title>
+  <title>IBC Transfer → Osmosis (channel-141)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; background:#0f1222; color:#e9edff; display:flex; min-height:100vh; align-items:center; justify-content:center; padding:24px }
-    .card { width:100%; max-width:720px; background:#151a33; border:1px solid #222a55; border-radius:16px; padding:20px; box-shadow:0 16px 40px rgba(0,0,0,.35) }
+    .card { width:100%; max-width:680px; background:#151a33; border:1px solid #222a55; border-radius:16px; padding:20px; box-shadow:0 16px 40px rgba(0,0,0,.35) }
     h1 { margin:0 0 6px; font-size:20px }
     .sub { color:#aab3da; font-size:13px; margin:0 0 12px }
     .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center }
-    button { background:#6d8bff; color:white; border:none; padding:10px 14px; border-radius:10px; cursor:pointer; font-size:14px }
+    label { font-size:14px; color:#cfd7ff }
+    input, select, button { width:100%; padding:12px; border-radius:10px; border:1px solid #2a3266; background:#0f1533; color:#e9edff; font-size:15px }
+    button { background:#6d8bff; border:none; cursor:pointer }
     button:disabled { opacity:.6; cursor:not-allowed }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace }
     .addr { background:#0f1533; border:1px solid #222a55; border-radius:12px; padding:10px 12px; font-size:13px; color:#bfc7ee }
     .status { color:#aab3da; min-height:20px; margin:8px 0 }
     .error { color:#ffb4c2 }
-    table { width:100%; border-collapse:collapse; margin-top:10px; font-size:14px }
-    th, td { padding:10px 8px; text-align:left; border-bottom:1px solid #222a55 }
-    th { color:#cfd7ff; font-size:12px; letter-spacing:.2px }
-    .tag { font-size:12px; color:#9fb2ff }
     .rpc { font-size:12px; color:#bfc7ee }
+    .grid { display:grid; grid-template-columns: 1fr 1fr; gap:12px }
   </style>
 
-  <!-- CosmJS UMD (primary + fallback). If blocked, ESM fallback below attaches window.cosmjs -->
+  <!-- CosmJS UMD (primary + fallback); ESM fallback attaches window.cosmjs -->
   <script>
     (function loadCosmjsUMD() {
       function add(src){ const s=document.createElement("script"); s.src=src; s.async=true; document.head.appendChild(s); }
@@ -34,61 +33,91 @@
 </head>
 <body>
   <div class="card">
-    <h1>ICS-20 Balances</h1>
-    <p class="sub">Cosmos Hub (cosmoshub-4) • shows only <span class="mono">ibc/…</span> coins</p>
+    <h1>IBC Transfer → Osmosis</h1>
+    <p class="sub">Cosmos Hub (cosmoshub-4) → Osmosis via <b>channel-141</b></p>
 
     <div class="row" style="margin-bottom:8px">
       <button id="connectBtn">Connect Keplr</button>
       <span id="status" class="status"></span>
     </div>
 
-    <div id="addrWrap" class="addr" style="display:none">
-      <div>Address: <span id="addr" class="mono"></span></div>
+    <div id="addrWrap" class="addr" style="display:none; margin-bottom:12px">
+      <div>Cosmos: <span id="cosmosAddr" class="mono"></span></div>
+      <div>Osmosis: <span id="osmoAddr" class="mono"></span></div>
       <div class="rpc">RPC: <span id="rpcUsed" class="mono">—</span></div>
     </div>
 
-    <div id="tableWrap" style="display:none">
-      <table>
-        <thead>
-          <tr>
-            <th>IBC Denom</th>
-            <th>Amount (minimal)</th>
-            <th>Amount (~human, 6dp)</th>
-          </tr>
-        </thead>
-        <tbody id="tbody"></tbody>
-      </table>
-      <div class="tag" style="margin-top:8px">Human amount assumes 6 decimals (most IBC assets use 6).</div>
-    </div>
+    <div id="formWrap" style="display:none">
+      <div class="grid">
+        <div>
+          <label for="denomSelect">IBC asset (Cosmos Hub)</label>
+          <select id="denomSelect"></select>
+        </div>
+        <div>
+          <label for="amount">Amount (human, ~6dp)</label>
+          <input id="amount" type="number" placeholder="e.g., 1.5" step="0.000001" min="0" />
+        </div>
+      </div>
 
-    <div id="diag" class="tag" style="margin-top:10px"></div>
+      <div class="grid" style="margin-top:6px">
+        <div>
+          <small>Available (minimal): <span id="balMinimal" class="mono">0</span></small><br/>
+          <small>Available (~human): <span id="balHuman" class="mono">0.000000</span></small>
+        </div>
+        <div class="row">
+          <button id="btn50">50%</button>
+          <button id="btn75">75%</button>
+          <button id="btnMax">Max</button>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:10px">
+        <button id="sendBtn">Send via channel-141</button>
+      </div>
+    </div>
   </div>
 
   <script>
     // ---------- Config ----------
-    // Multiple RPCs; we try each until one connects (CORS-friendly first).
+    const CHANNEL = "channel-141"; // Cosmos → Osmosis
+    const DEFAULT_DECIMALS = 6;    // display assumption
+    const GAS_PRICE = 0.025;       // uatom per gas (simple calc)
+
+    // Multiple browser-friendly RPCs; we try each until one works.
     const RPC_CANDIDATES = [
-      "https://rpc.cosmos.directory/cosmoshub",            // cosmos.directory proxy (CORS open)
-      "https://rpc-cosmoshub.blockapsis.com",              // Blockapsis (often CORS open)
-      "https://cosmoshub-validator.enigma-validator.com",  // Enigma
-      "https://rpc.cosmoshub.strange.love",                // may block CORS sometimes
+      "https://rpc.cosmos.directory/cosmoshub",
+      "https://rpc-cosmoshub.blockapsis.com",
+      "https://cosmoshub-validator.enigma-validator.com",
+      "https://rpc.cosmoshub.strange.love",
       "https://rpc-cosmoshub-ia.cosmosia.notional.ventures"
     ];
-    const DEFAULT_DECIMALS = 6;
 
     // ---------- State ----------
-    let address = "";
+    let cosmosAddr = "";
+    let osmoAddr   = "";
     let connectedRpc = "";
+    let client = null;
+    let signer = null;
+    let balances = [];  // IBC (ibc/…) non-zero balances
 
     // ---------- UI ----------
-    const connectBtn = document.getElementById("connectBtn");
-    const statusEl   = document.getElementById("status");
-    const addrWrap   = document.getElementById("addrWrap");
-    const addrEl     = document.getElementById("addr");
-    const rpcUsedEl  = document.getElementById("rpcUsed");
-    const tableWrap  = document.getElementById("tableWrap");
-    const tbody      = document.getElementById("tbody");
-    const diagEl     = document.getElementById("diag");
+    const connectBtn  = document.getElementById("connectBtn");
+    const statusEl    = document.getElementById("status");
+    const addrWrap    = document.getElementById("addrWrap");
+    const cosmosAddrEl= document.getElementById("cosmosAddr");
+    const osmoAddrEl  = document.getElementById("osmoAddr");
+    const rpcUsedEl   = document.getElementById("rpcUsed");
+    const formWrap    = document.getElementById("formWrap");
+
+    const denomSelect = document.getElementById("denomSelect");
+    const amountInput = document.getElementById("amount");
+    const balMinimalEl= document.getElementById("balMinimal");
+    const balHumanEl  = document.getElementById("balHuman");
+
+    const btn50 = document.getElementById("btn50");
+    const btn75 = document.getElementById("btn75");
+    const btnMax = document.getElementById("btnMax");
+    const sendBtn = document.getElementById("sendBtn");
 
     // ---------- CosmJS loader fallback (UMD → ESM) ----------
     async function ensureCosmjsReady() {
@@ -97,98 +126,165 @@
         await new Promise(r => setTimeout(r, 100));
       }
       if (window.cosmjs) return;
-      try {
-        const mod = await import("https://esm.sh/@cosmjs/stargate@0.31.2?bundle");
-        window.cosmjs = { StargateClient: mod.StargateClient };
-      } catch (e) {
-        throw new Error("CosmJS failed to load (blocked by CSP/network).");
-      }
+      const mod = await import("https://esm.sh/@cosmjs/stargate@0.31.2?bundle");
+      window.cosmjs = { StargateClient: mod.StargateClient, SigningStargateClient: mod.SigningStargateClient };
     }
 
-    // ---------- Connect to first working RPC ----------
-    async function connectAnyRpc() {
-      await ensureCosmjsReady();
-      const { StargateClient } = window.cosmjs;
-      let lastErr = null;
-      for (const rpc of RPC_CANDIDATES) {
-        try {
-          const client = await StargateClient.connect(rpc);
-          // quick sanity query to ensure node responds
-          await client.getHeight();
-          connectedRpc = rpc;
-          return client;
-        } catch (e) {
-          lastErr = e;
-          addDiag(`RPC failed: ${rpc} — ${e?.message || e}`);
-        }
-      }
-      throw new Error("All RPCs failed (CORS or offline).");
-    }
-
-    function addDiag(msg) {
-      const p = document.createElement("div");
-      p.textContent = msg;
-      diagEl.appendChild(p);
-    }
-
+    // ---------- Helpers ----------
     function toHuman(minimalStr, dec = DEFAULT_DECIMALS) {
       const n = Number(minimalStr || 0);
       return (n / Math.pow(10, dec)).toFixed(6);
     }
+    function toMinimal(human, dec = DEFAULT_DECIMALS) {
+      return String(Math.round(Number(human) * Math.pow(10, dec)));
+    }
 
-    async function getIbcBalances(client, addr) {
+    async function connectAnyRpc() {
+      await ensureCosmjsReady();
+      const { StargateClient } = window.cosmjs;
+      for (const rpc of RPC_CANDIDATES) {
+        try {
+          const c = await StargateClient.connect(rpc);
+          await c.getHeight();
+          connectedRpc = rpc;
+          return c;
+        } catch (_) {}
+      }
+      throw new Error("All Cosmos Hub RPCs failed (CORS/offline).");
+    }
+
+    async function getIbcBalances(addr) {
       const coins = await client.getAllBalances(addr);
       return (coins || []).filter(c => c.denom?.startsWith("ibc/") && BigInt(c.amount || "0") > 0n);
     }
 
-    function renderBalances(coins) {
-      tbody.innerHTML = "";
-      for (const c of coins) {
-        const tr = document.createElement("tr");
-        tr.innerHTML = `
-          <td class="mono">${c.denom}</td>
-          <td class="mono">${c.amount}</td>
-          <td class="mono">${toHuman(c.amount)}</td>
-        `;
-        tbody.appendChild(tr);
+    function populateDropdown() {
+      denomSelect.innerHTML = "";
+      // sort for readability
+      balances.sort((a,b)=>a.denom.localeCompare(b.denom));
+      for (const c of balances) {
+        const opt = document.createElement("option");
+        opt.value = c.denom;
+        opt.textContent = `${c.denom} — ${toHuman(c.amount)} (~${c.amount} minimal)`;
+        denomSelect.appendChild(opt);
+      }
+      if (balances.length > 0) {
+        denomSelect.value = balances[0].denom;
+        updateSelected();
       }
     }
 
+    function findSelectedCoin() {
+      const denom = denomSelect.value;
+      return balances.find(c => c.denom === denom) || { amount:"0", denom };
+    }
+
+    function updateSelected() {
+      const coin = findSelectedCoin();
+      balMinimalEl.textContent = coin.amount;
+      balHumanEl.textContent = toHuman(coin.amount);
+    }
+
+    // ---------- Events ----------
+    denomSelect.onchange = updateSelected;
+    btn50.onclick = () => { const c=findSelectedCoin(); amountInput.value = toHuman((BigInt(c.amount)*50n)/100n); };
+    btn75.onclick = () => { const c=findSelectedCoin(); amountInput.value = toHuman((BigInt(c.amount)*75n)/100n); };
+    btnMax.onclick = () => { const c=findSelectedCoin(); amountInput.value = toHuman(BigInt(c.amount)); };
+
     connectBtn.onclick = async () => {
       try {
-        diagEl.textContent = "";
         statusEl.textContent = "Connecting Keplr…";
         if (!window.keplr) throw new Error("Keplr not detected. Use HTTPS and enable the extension.");
 
-        await window.keplr.enable(["cosmoshub-4"]);
-        const signer = window.getOfflineSigner("cosmoshub-4");
-        const accounts = await signer.getAccounts();
-        address = accounts[0]?.address || "";
-        if (!address) throw new Error("No Cosmos Hub account found.");
+        // Enable chains
+        await window.keplr.enable(["cosmoshub-4", "osmosis-1"]);
 
-        statusEl.textContent = "Finding a browser-friendly RPC…";
-        const client = await connectAnyRpc();
+        // Get addresses
+        signer = window.getOfflineSigner("cosmoshub-4");
+        const cosAcc = await signer.getAccounts();
+        cosmosAddr = cosAcc[0]?.address || "";
+        const osmoSigner = window.getOfflineSigner("osmosis-1");
+        const osmoAcc = await osmoSigner.getAccounts();
+        osmoAddr = osmoAcc[0]?.address || "";
+        if (!cosmosAddr || !osmoAddr) throw new Error("Missing Cosmos/Osmosis accounts.");
 
-        addrEl.textContent = address;
+        statusEl.textContent = "Finding RPC…";
+        client = await connectAnyRpc();
+
+        cosmosAddrEl.textContent = cosmosAddr;
+        osmoAddrEl.textContent = osmoAddr;
         rpcUsedEl.textContent = connectedRpc;
         addrWrap.style.display = "block";
 
-        statusEl.textContent = "Fetching ICS-20 balances…";
-        const ibcCoins = await getIbcBalances(client, address);
-
-        tableWrap.style.display = "block";
-        if (ibcCoins.length === 0) {
-          statusEl.innerHTML = "No ICS-20 balances found on this address.";
-          tbody.innerHTML = "";
+        statusEl.textContent = "Loading IBC balances…";
+        balances = await getIbcBalances(cosmosAddr);
+        if (balances.length === 0) {
+          statusEl.innerHTML = "No IBC balances found on Cosmos Hub.";
           return;
         }
 
-        renderBalances(ibcCoins);
-        statusEl.textContent = `Found ${ibcCoins.length} IBC asset${ibcCoins.length>1?"s":""}.`;
+        populateDropdown();
+        formWrap.style.display = "block";
+        statusEl.textContent = "Ready.";
       } catch (e) {
         console.error(e);
         statusEl.innerHTML = `<span class="error">❌ ${e?.message || e}</span>`;
-        addDiag("Tip: serve over https:// (not file://) and disable content blockers on this page.");
+      }
+    };
+
+    sendBtn.onclick = async () => {
+      try {
+        const human = Number((amountInput.value || "").trim());
+        if (!human || human <= 0) return alert("Enter a valid amount.");
+        const coin = findSelectedCoin();
+        const minimal = toMinimal(human);
+        if (BigInt(minimal) > BigInt(coin.amount || "0")) {
+          return alert("Amount exceeds available balance.");
+        }
+
+        await ensureCosmjsReady();
+        const { SigningStargateClient } = window.cosmjs || {};
+        if (!SigningStargateClient) throw new Error("SigningStargateClient unavailable.");
+
+        const signing = await SigningStargateClient.connectWithSigner(connectedRpc, signer);
+
+        const msg = {
+          typeUrl: "/ibc.applications.transfer.v1.MsgTransfer",
+          value: {
+            sourcePort: "transfer",
+            sourceChannel: CHANNEL,
+            sender: cosmosAddr,
+            receiver: osmoAddr,
+            token: { denom: coin.denom, amount: minimal },
+            timeoutHeight: {},
+            timeoutTimestamp: String((Date.now() + 10*60*1000) * 1e6), // +10 min, ns
+          },
+        };
+
+        statusEl.textContent = "Simulating gas…";
+        const gasEst = await signing.simulate(cosmosAddr, [msg], "");
+        const gas = Math.ceil(gasEst * 1.3); // 30% buffer
+        const fee = {
+          gas: String(gas),
+          amount: [{ denom: "uatom", amount: String(Math.ceil(gas * GAS_PRICE)) }],
+        };
+
+        statusEl.textContent = "Broadcasting…";
+        const res = await signing.signAndBroadcast(cosmosAddr, [msg], fee);
+
+        if (res.code === 0) {
+          statusEl.textContent = `✅ Sent! TX hash: ${res.transactionHash || "(available in Keplr)"}`;
+          // Refresh this denom’s balance
+          const fresh = await client.getAllBalances(cosmosAddr);
+          const updated = fresh.find(x => x.denom === coin.denom) || { amount:"0", denom: coin.denom };
+          coin.amount = updated.amount;
+          updateSelected();
+        } else {
+          statusEl.textContent = "❌ Failed: " + (res.rawLog || ("code " + res.code));
+        }
+      } catch (e) {
+        console.error(e);
+        statusEl.innerHTML = `<span class="error">❌ ${e?.message || e}</span>`;
       }
     };
   </script>
