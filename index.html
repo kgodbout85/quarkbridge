@@ -63,9 +63,10 @@
 
   <script>
     // --- Config ---
-    const denom   = "factory/cosmos1n6asrjy9754q8y9jsxqf557zmsv3s3xa5m9eg5/quark";
+    const denom   = "ibc/7B6EBFC446E50DFF981C994E207BFB398889706C2B0DF8A14D8B87F6C0E33A1A"; // QUARK on Cosmos (IBC)
     const channel = "channel-141"; // Cosmos → Osmosis
-    const RPC     = "https://rpc.cosmoshub.strange.love"; // same RPC you used
+    const RPC     = "https://rpc.cosmoshub.strange.love";
+    const DECIMALS = 6; // QUARK has 6 decimals on-chain
 
     let fromAddress = "";
     let toAddress   = "";
@@ -78,12 +79,20 @@
     const warningEl   = document.getElementById("warning");
     const balanceEl   = document.getElementById("balance");
 
-    // Show a warning if Keplr isn't injected
     if (!window.keplr) {
       warningEl.textContent = "⚠️ Keplr not detected. Open this page on HTTPS with Keplr installed/enabled.";
     }
 
-    // Fetch & display QUARK balance (no GasPrice used)
+    function toWhole(minimalStr) {
+      const n = Number(minimalStr || "0");
+      return (n / Math.pow(10, DECIMALS)).toFixed(6);
+    }
+    function toMinimal(wholeNumber) {
+      const n = Number(wholeNumber);
+      return String(Math.round(n * Math.pow(10, DECIMALS)));
+    }
+
+    // Fetch & display QUARK balance (read-only client; no GasPrice used)
     async function fetchQuarkBalance() {
       try {
         if (!fromAddress) return;
@@ -91,10 +100,9 @@
         if (!StargateClient) throw new Error("CosmJS not loaded");
         const q = await StargateClient.connect(RPC);
         const bal = await q.getBalance(fromAddress, denom);
-        const amtMinimal = BigInt(bal?.amount ?? "0");
-        const amtWhole = Number(amtMinimal) / 1_000_000; // 6 decimals
+        const amtMinimal = bal?.amount ?? "0";
         balanceEl.style.display = "block";
-        balanceEl.textContent = `Available: ${amtWhole.toFixed(6)} QUARK`;
+        balanceEl.textContent = `Available: ${toWhole(amtMinimal)} QUARK`;
       } catch (e) {
         console.error("Balance fetch error:", e);
         balanceEl.style.display = "block";
@@ -112,7 +120,7 @@
         // Enable both chains
         await window.keplr.enable(["cosmoshub-4", "osmosis-1"]);
 
-        // Use the same signer API you had working
+        // Legacy API (you had this working)
         cosmosSigner = window.getOfflineSigner("cosmoshub-4");
         const cosmosAccounts = await cosmosSigner.getAccounts();
         fromAddress = cosmosAccounts[0].address;
@@ -127,7 +135,7 @@
         statusEl.textContent = "✅ Keplr connected!";
         warningEl.textContent = "";
 
-        // NEW: fetch balance after connecting
+        // Fetch QUARK balance after connecting
         await fetchQuarkBalance();
       } catch (err) {
         console.error(err);
@@ -155,7 +163,7 @@
             receiver: toAddress,
             token: {
               denom: denom,
-              amount: String(Math.round(amount * 1_000_000)), // avoid float dust
+              amount: toMinimal(amount),
             },
             timeoutHeight: {},
             timeoutTimestamp: String((Date.now() + 600_000) * 1e6), // +10 min in ns
