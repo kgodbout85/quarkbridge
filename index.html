@@ -14,7 +14,7 @@
     :root{
       --bg-1:#070a16; --bg-2:#0b1140; --card:#0f1633cc; --border:#1f2a66;
       --text:#e9edff; --muted:#aab3da; --accent-start:#7cfbff; --accent-end:#6d8bff;
-      --ok:#34d399; --err:#ffb4c2;
+      --ok:#34d399; --err:#ffb4c2; --warn:#f59e0b;
     }
     *{box-sizing:border-box} html,body{height:100%}
     body{
@@ -49,6 +49,9 @@
     .spinner{width:16px;height:16px;border-radius:50%;border:2px solid #ffffff55;border-top-color:#fff;animation:spin .8s linear infinite;display:inline-block;vertical-align:middle;margin-right:8px}
     @keyframes spin{to{transform:rotate(360deg)}}
     details.diag summary{cursor:pointer;color:#9fb2ff} details.diag{font-size:12px;color:#aab3da}
+    /* Warning banner */
+    .warning{display:flex;gap:10px;align-items:flex-start;background:#2a1600;border:1px solid #7c4a00;color:#ffd59e;padding:10px 12px;border-radius:12px}
+    .warning b{color:#ffce6a}
   </style>
 
   <!-- CosmJS UMD (primary + fallback). If blocked, we ESM-import in boot(). -->
@@ -71,7 +74,12 @@
     </div>
 
     <div class="card stack">
-      <div class="row">
+      <div class="warning" role="alert" aria-live="polite">
+        <div style="font-size:18px;line-height:1">⚠️</div>
+        <div><b>Use at your own risk.</b> Not responsible for any lost funds. Always test with a small amount first.</div>
+      </div>
+
+      <div class="row" style="margin-top:10px">
         <button id="connectBtn" type="button" disabled><span class="spinner" id="bootSpin"></span>Initializing…</button>
         <span id="status" class="status"></span>
         <button id="refreshBtn" class="ghost right" type="button" style="display:none">↻ Refresh balances</button>
@@ -125,10 +133,10 @@
 
   <script>
     // ---------- Config ----------
-    const CHANNEL = "channel-141";
+    const CHANNEL = "channel-141";               // Cosmos → Osmosis
     const DEFAULT_DECIMALS = 6;
-    const GAS_PRICE = 0.035;  // uatom per gas
-    const GAS_BUFFER = 1.6;
+    const GAS_PRICE = 0.035;                     // uatom per gas
+    const GAS_BUFFER = 1.6;                      // 60% over simulate
     const QUARK_IBC = "ibc/7B6EBFC446E50DFF981C994E207BFB398889706C2B0DF8A14D8B87F6C0E33A1A";
 
     const RPC_CANDIDATES = [
@@ -172,11 +180,13 @@
     const refreshBtn = document.getElementById("refreshBtn");
     const resetBtn = document.getElementById("resetBtn");
 
-    // ---------- Utilities ----------
+    // ---------- Utils ----------
     const sleep = (ms)=>new Promise(r=>setTimeout(r,ms));
     const addDiag = (m)=>{ const d=document.createElement("div"); d.textContent=m; diagEl.appendChild(d); };
     const setStatus = (m,cls="")=>{ statusEl.className="status "+cls; statusEl.textContent=m||""; };
+    const withTimeout=(p,ms,label="op")=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error(label+" timed out")),ms))]);
 
+    // ---------- CosmJS / Keplr readiness ----------
     async function ensureCosmjsReady(){
       const start=Date.now();
       while(!window.cosmjs && Date.now()-start<3000) await sleep(100);
@@ -191,9 +201,6 @@
       while(!window.keplr && Date.now()-start<timeoutMs) await sleep(100);
       if(!window.keplr) throw new Error("Keplr not detected. Enable the extension.");
     }
-    const withTimeout=(p,ms,label="op")=>Promise.race([
-      p, new Promise((_,rej)=>setTimeout(()=>rej(new Error(label+" timed out")),ms))
-    ]);
 
     // ---------- RPC / Clients ----------
     async function connectAnyRpc(){
@@ -213,7 +220,6 @@
         else { await withTimeout(queryClient.getHeight(), 4000, "RPC ping"); }
       }catch(_){ queryClient = await connectAnyRpc(); }
     }
-
     async function balancesWithRetries(addr){
       let last;
       for(let i=0;i<3;i++){
@@ -231,15 +237,14 @@
       try{
         await withTimeout(window.keplr.enable(["cosmoshub-4","osmosis-1"]), 15000, "Keplr enable");
       }catch(_){
-        // Fallback: enable sequentially
+        // fallback: enable one by one
         await withTimeout(window.keplr.enable("cosmoshub-4"), 15000, "Enable cosmoshub-4");
         await withTimeout(window.keplr.enable("osmosis-1"), 15000, "Enable osmosis-1");
       }
-      // Hydrate internal state (prevents empty account edge)
+      // hydrate keys (prevents empty account edge)
       await withTimeout(window.keplr.getKey("cosmoshub-4"), 8000, "getKey cosmos");
       await withTimeout(window.keplr.getKey("osmosis-1"), 8000, "getKey osmo");
     }
-
     async function pollAccounts(getter, label){
       const start=Date.now();
       while(Date.now()-start<8000){
@@ -249,7 +254,6 @@
       }
       throw new Error(label+" accounts not available");
     }
-
     async function hydrateAddresses(){
       const cosSigner = window.getOfflineSignerAuto ? await window.getOfflineSignerAuto("cosmoshub-4")
                                                     : window.getOfflineSigner("cosmoshub-4");
@@ -265,7 +269,6 @@
       cosmosAddrEl.textContent = cosmosAddr;
       osmoAddrEl.textContent = osmoAddr;
     }
-
     async function warmUpSigning(){
       const {SigningStargateClient}=window.cosmjs;
       signingClient = await withTimeout(SigningStargateClient.connectWithSigner(connectedRpc, signer, {
@@ -274,7 +277,7 @@
       await withTimeout(signingClient.getSequence(cosmosAddr), 8000, "account sequence");
     }
 
-    // ---------- Balances / UI ----------
+    // ---------- Balance / Amount helpers ----------
     function toHuman(min, dec=DEFAULT_DECIMALS){ return (Number(min||0)/Math.pow(10,dec)).toFixed(6); }
     function toMinimal(h, dec=DEFAULT_DECIMALS){ return String(Math.round(Number(h)*Math.pow(10,dec))); }
 
@@ -282,7 +285,6 @@
       const coins = await balancesWithRetries(addr);
       return coins.filter(c=>c.denom?.startsWith("ibc/") && BigInt(c.amount||"0")>0n);
     }
-
     function populateDropdown(){
       denomSelect.innerHTML = "";
       balances.sort((a,b)=>a.denom.localeCompare(b.denom));
@@ -300,7 +302,6 @@
       refreshBtn.style.display = balances.length ? "inline-block" : "none";
       resetBtn.style.display = "inline-block";
     }
-
     const findSelectedCoin = ()=> balances.find(c=>c.denom===denomSelect.value) || {amount:"0",denom:denomSelect.value};
     function updateSelected(){ const c=findSelectedCoin(); balHumanEl.textContent=toHuman(c.amount); quarkBadge.style.display=c.denom===QUARK_IBC?"inline-block":"none"; }
     function disableForm(dis){ denomSelect.disabled=dis; amountInput.disabled=dis; btn50.disabled=btn75.disabled=btnMax.disabled=dis; sendBtn.disabled=dis; memoInput.disabled=dis; }
@@ -309,7 +310,6 @@
       const m=(msg||"").toLowerCase();
       return m.includes("timeout") || (m.includes("insufficient")&&m.includes("fee")) || m.includes("out of gas") || m.includes("account sequence");
     }
-
     async function sendIbcWithRetries(coin, minimal, memo){
       let attempt=0,lastErr;
       while(attempt<3){
@@ -342,6 +342,7 @@
         await Promise.all([ensureCosmjsReady(), waitForKeplr()]);
         connectBtn.innerHTML="Connect Keplr"; connectBtn.disabled=false; bootSpin.style.display="none";
         setStatus("Ready to connect.");
+
         window.addEventListener("keplr_keystorechange", async ()=>{
           if(!connected) return;
           try{
@@ -368,7 +369,6 @@
     };
 
     resetBtn.onclick = async ()=>{
-      // full teardown + allow a clean re-connect (mimics a soft refresh)
       try{
         setStatus("Resetting…");
         queryClient = null; signingClient = null; connected=false; connectInFlight=false;
@@ -426,7 +426,7 @@
         inFlight=true; disableForm(true); txWrap.style.display="none";
         sendBtn.innerHTML='<span class="spinner"></span>Sending…'; setStatus("Preparing transaction…");
 
-        await enableChainsRobust(); // re-ensure permission if extension was locked
+        await enableChainsRobust(); // ensure permission if extension locked
         const res = await sendIbcWithRetries(coin, minimal, memoInput.value||"");
 
         setStatus("✅ Sent!","ok"); sendBtn.textContent="Send to Osmosis";
