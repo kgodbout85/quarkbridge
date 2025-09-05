@@ -2,95 +2,95 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>ICS-20 Balances (Cosmos Hub)</title>
+  <title>ICS20 Balances — Cosmos Hub</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    :root { --bg:#0b1020; --card:#121a35; --text:#eef2ff; --muted:#aab3d9; --accent:#6d8bff; --line:#1f2a54; }
-    * { box-sizing: border-box }
-    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji"; background:linear-gradient(135deg,#0b1020,#0d1330 70%); color:var(--text); min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px }
-    .card { width:100%; max-width:860px; background:var(--card); border:1px solid var(--line); border-radius:16px; padding:20px 20px 8px; box-shadow:0 20px 50px rgba(0,0,0,.35) }
-    h1 { margin:0 0 4px; font-size:20px; letter-spacing:.2px }
-    .sub { color:var(--muted); margin:0 0 16px; font-size:14px }
-    .row { display:flex; gap:10px; flex-wrap:wrap; margin:8px 0 16px }
-    button { background:var(--accent); color:#fff; border:none; padding:10px 14px; border-radius:10px; font-size:14px; cursor:pointer }
-    button:disabled { opacity:.5; cursor:not-allowed }
-    .addr { background:#0f1733; border:1px solid var(--line); border-radius:12px; padding:10px 12px; font-size:13px; color:var(--muted) }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; background:#0f1222; color:#e9edff; display:flex; min-height:100vh; align-items:center; justify-content:center; padding:24px }
+    .card { width:100%; max-width:720px; background:#151a33; border:1px solid #222a55; border-radius:16px; padding:20px; box-shadow:0 16px 40px rgba(0,0,0,.35) }
+    h1 { margin:0 0 6px; font-size:20px }
+    .sub { color:#aab3da; font-size:13px; margin:0 0 12px }
+    .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center }
+    button { background:#6d8bff; color:white; border:none; padding:10px 14px; border-radius:10px; cursor:pointer; font-size:14px }
+    button:disabled { opacity:.6; cursor:not-allowed }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace }
-    .status { color:var(--muted); margin:6px 0 4px; min-height:20px }
-    table { width:100%; border-collapse: collapse; margin-top:8px; font-size:14px }
-    th, td { text-align:left; padding:10px 8px; border-bottom:1px solid var(--line) }
-    th { color:#cfd7ff; font-weight:600; font-size:13px; letter-spacing:.2px }
-    .pill { display:inline-block; padding:3px 8px; border-radius:999px; background:#0e1a3d; border:1px solid var(--line); color:#cbd5ff; font-size:12px }
-    .help { color:var(--muted); font-size:12px; margin-top:10px }
-    .tag { font-size:11px; color:#9fb2ff; }
+    .addr { background:#0f1533; border:1px solid #222a55; border-radius:12px; padding:10px 12px; font-size:13px; color:#bfc7ee }
+    .status { color:#aab3da; min-height:20px; margin:8px 0 }
     .error { color:#ffb4c2 }
+    table { width:100%; border-collapse:collapse; margin-top:10px; font-size:14px }
+    th, td { padding:10px 8px; text-align:left; border-bottom:1px solid #222a55 }
+    th { color:#cfd7ff; font-size:12px; letter-spacing:.2px }
+    .tag { font-size:12px; color:#9fb2ff }
+    .rpc { font-size:12px; color:#bfc7ee }
   </style>
 
-  <!-- Try UMD (unpkg → jsDelivr). If both fail, use ESM fallback. -->
+  <!-- CosmJS UMD (primary + fallback). If blocked, ESM fallback below attaches window.cosmjs -->
   <script>
     (function loadCosmjsUMD() {
-      function add(src) { const s=document.createElement("script"); s.src=src; s.async=true; document.head.appendChild(s); }
+      function add(src){ const s=document.createElement("script"); s.src=src; s.async=true; document.head.appendChild(s); }
       add("https://unpkg.com/@cosmjs/stargate@0.31.2/build/index.min.js");
-      setTimeout(() => { if (!window.cosmjs) add("https://cdn.jsdelivr.net/npm/@cosmjs/stargate@0.31.2/build/index.min.js"); }, 600);
+      setTimeout(()=>{ if(!window.cosmjs) add("https://cdn.jsdelivr.net/npm/@cosmjs/stargate@0.31.2/build/index.min.js"); }, 600);
     })();
   </script>
 </head>
 <body>
   <div class="card">
     <h1>ICS-20 Balances</h1>
-    <p class="sub">Cosmos Hub (cosmoshub-4) — IBC coins with <code class="mono">ibc/…</code> denoms</p>
+    <p class="sub">Cosmos Hub (cosmoshub-4) • shows only <span class="mono">ibc/…</span> coins</p>
 
-    <div class="row">
+    <div class="row" style="margin-bottom:8px">
       <button id="connectBtn">Connect Keplr</button>
       <span id="status" class="status"></span>
     </div>
 
-    <div id="addrBox" class="addr" style="display:none">
-      <div>Address: <span id="fromAddr" class="mono"></span></div>
+    <div id="addrWrap" class="addr" style="display:none">
+      <div>Address: <span id="addr" class="mono"></span></div>
+      <div class="rpc">RPC: <span id="rpcUsed" class="mono">—</span></div>
     </div>
 
     <div id="tableWrap" style="display:none">
-      <table id="balTable">
+      <table>
         <thead>
           <tr>
-            <th>Asset</th>
             <th>IBC Denom</th>
-            <th>Amount (human)</th>
             <th>Amount (minimal)</th>
-            <th>Decimals</th>
+            <th>Amount (~human, 6dp)</th>
           </tr>
         </thead>
-        <tbody id="balTbody"></tbody>
+        <tbody id="tbody"></tbody>
       </table>
-      <p class="help">Tip: “human” assumes 6 decimals unless resolved via denom trace/metadata.</p>
+      <div class="tag" style="margin-top:8px">Human amount assumes 6 decimals (most IBC assets use 6).</div>
     </div>
 
-    <p id="warn" class="help"></p>
+    <div id="diag" class="tag" style="margin-top:10px"></div>
   </div>
 
   <script>
-    // ---- Config ----
-    const RPC = "https://rpc.cosmoshub.strange.love";      // Cosmos Hub RPC
-    const LCDS = [
-      "https://rest.cosmos.directory/cosmoshub",           // tends to have CORS open
-      "https://lcd-cosmoshub.imperator.co",                // fallback
+    // ---------- Config ----------
+    // Multiple RPCs; we try each until one connects (CORS-friendly first).
+    const RPC_CANDIDATES = [
+      "https://rpc.cosmos.directory/cosmoshub",            // cosmos.directory proxy (CORS open)
+      "https://rpc-cosmoshub.blockapsis.com",              // Blockapsis (often CORS open)
+      "https://cosmoshub-validator.enigma-validator.com",  // Enigma
+      "https://rpc.cosmoshub.strange.love",                // may block CORS sometimes
+      "https://rpc-cosmoshub-ia.cosmosia.notional.ventures"
     ];
     const DEFAULT_DECIMALS = 6;
 
-    // State
-    let fromAddress = "";
-    let cosmosSigner;
+    // ---------- State ----------
+    let address = "";
+    let connectedRpc = "";
 
-    // UI
+    // ---------- UI ----------
     const connectBtn = document.getElementById("connectBtn");
     const statusEl   = document.getElementById("status");
-    const warnEl     = document.getElementById("warn");
-    const addrBox    = document.getElementById("addrBox");
-    const fromAddrEl = document.getElementById("fromAddr");
+    const addrWrap   = document.getElementById("addrWrap");
+    const addrEl     = document.getElementById("addr");
+    const rpcUsedEl  = document.getElementById("rpcUsed");
     const tableWrap  = document.getElementById("tableWrap");
-    const tbody      = document.getElementById("balTbody");
+    const tbody      = document.getElementById("tbody");
+    const diagEl     = document.getElementById("diag");
 
-    // -------- CosmJS loader fallback (UMD → ESM) ----------
+    // ---------- CosmJS loader fallback (UMD → ESM) ----------
     async function ensureCosmjsReady() {
       const start = Date.now();
       while (!window.cosmjs && Date.now() - start < 2500) {
@@ -101,158 +101,94 @@
         const mod = await import("https://esm.sh/@cosmjs/stargate@0.31.2?bundle");
         window.cosmjs = { StargateClient: mod.StargateClient };
       } catch (e) {
-        throw new Error("CosmJS failed to load (blocked by CSP or network).");
+        throw new Error("CosmJS failed to load (blocked by CSP/network).");
       }
     }
 
-    // -------- IBC denom resolution (best-effort, non-blocking) ----------
-    async function fetchJson(url) {
-      const r = await fetch(url, { mode: "cors" });
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      return await r.json();
-    }
-
-    async function getDenomTrace(ibcHash) {
-      // Try both modern & legacy paths across LCDs
-      const paths = LCDS.flatMap(base => ([
-        `${base}/ibc/apps/transfer/v1/denom_traces/${encodeURIComponent(ibcHash.replace("ibc/",""))}`,
-        `${base}/ibc/applications/transfer/v1/denom_traces/${encodeURIComponent(ibcHash.replace("ibc/",""))}`,
-      ]));
-      for (const url of paths) {
-        try {
-          const j = await fetchJson(url);
-          if (j?.denom_trace?.base_denom) {
-            return j.denom_trace.base_denom; // e.g., "uatom", "uosmo", "axxx"
-          }
-        } catch (_) {}
-      }
-      return null;
-    }
-
-    async function getDenomMetadata(baseDenom) {
-      if (!baseDenom) return null;
-      const urls = LCDS.map(base => `${base}/cosmos/bank/v1beta1/denoms_metadata/${encodeURIComponent(baseDenom)}`);
-      for (const url of urls) {
-        try {
-          const j = await fetchJson(url);
-          if (j?.metadata) {
-            const md = j.metadata;
-            let decimals = DEFAULT_DECIMALS, display = md.display || baseDenom;
-            if (Array.isArray(md.denom_units)) {
-              const du = md.denom_units.find(u => u.denom === display) || md.denom_units.find(u => typeof u.exponent === "number" && u.exponent > 0);
-              if (du && typeof du.exponent === "number") decimals = du.exponent;
-            }
-            return { display, decimals };
-          }
-        } catch (_) {}
-      }
-      return null;
-    }
-
-    function humanAmount(minimalStr, decimals) {
-      const n = Number(minimalStr || 0);
-      return (n / Math.pow(10, (typeof decimals === "number" ? decimals : DEFAULT_DECIMALS))).toFixed(6);
-    }
-
-    // -------- Core: fetch ICS-20 balances --------
-    async function fetchIcs20Balances(addr) {
+    // ---------- Connect to first working RPC ----------
+    async function connectAnyRpc() {
       await ensureCosmjsReady();
       const { StargateClient } = window.cosmjs;
-      const q = await StargateClient.connect(RPC);
-      const coins = await q.getAllBalances(addr);
-      // Only IBC/ICS-20 denoms
-      return (coins || []).filter(c => typeof c.denom === "string" && c.denom.startsWith("ibc/") && BigInt(c.amount || "0") > 0n);
+      let lastErr = null;
+      for (const rpc of RPC_CANDIDATES) {
+        try {
+          const client = await StargateClient.connect(rpc);
+          // quick sanity query to ensure node responds
+          await client.getHeight();
+          connectedRpc = rpc;
+          return client;
+        } catch (e) {
+          lastErr = e;
+          addDiag(`RPC failed: ${rpc} — ${e?.message || e}`);
+        }
+      }
+      throw new Error("All RPCs failed (CORS or offline).");
     }
 
-    function renderRow({ ibcDenom, amountMinimal, label, decimals }) {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td>
-          <span class="pill">${label || "—"}</span><br/>
-          <span class="tag">${decimals ?? DEFAULT_DECIMALS} decimals</span>
-        </td>
-        <td class="mono">${ibcDenom}</td>
-        <td class="mono">${humanAmount(amountMinimal, decimals)}</td>
-        <td class="mono">${amountMinimal}</td>
-        <td>${decimals ?? DEFAULT_DECIMALS}</td>
-      `;
-      tbody.appendChild(tr);
+    function addDiag(msg) {
+      const p = document.createElement("div");
+      p.textContent = msg;
+      diagEl.appendChild(p);
     }
 
-    // -------- Flow --------
+    function toHuman(minimalStr, dec = DEFAULT_DECIMALS) {
+      const n = Number(minimalStr || 0);
+      return (n / Math.pow(10, dec)).toFixed(6);
+    }
+
+    async function getIbcBalances(client, addr) {
+      const coins = await client.getAllBalances(addr);
+      return (coins || []).filter(c => c.denom?.startsWith("ibc/") && BigInt(c.amount || "0") > 0n);
+    }
+
+    function renderBalances(coins) {
+      tbody.innerHTML = "";
+      for (const c of coins) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td class="mono">${c.denom}</td>
+          <td class="mono">${c.amount}</td>
+          <td class="mono">${toHuman(c.amount)}</td>
+        `;
+        tbody.appendChild(tr);
+      }
+    }
+
     connectBtn.onclick = async () => {
       try {
-        warnEl.textContent = "";
+        diagEl.textContent = "";
         statusEl.textContent = "Connecting Keplr…";
-        if (!window.keplr) {
-          warnEl.innerHTML = "⚠️ Keplr not detected. Install/enable Keplr and open this page over <b>HTTPS</b>.";
-          return;
-        }
+        if (!window.keplr) throw new Error("Keplr not detected. Use HTTPS and enable the extension.");
 
         await window.keplr.enable(["cosmoshub-4"]);
         const signer = window.getOfflineSigner("cosmoshub-4");
         const accounts = await signer.getAccounts();
-        fromAddress = accounts[0]?.address || "";
-        cosmosSigner = signer;
+        address = accounts[0]?.address || "";
+        if (!address) throw new Error("No Cosmos Hub account found.");
 
-        if (!fromAddress) throw new Error("No Cosmos Hub account returned.");
+        statusEl.textContent = "Finding a browser-friendly RPC…";
+        const client = await connectAnyRpc();
 
-        // Show address
-        fromAddrEl.textContent = fromAddress;
-        addrBox.style.display = "block";
+        addrEl.textContent = address;
+        rpcUsedEl.textContent = connectedRpc;
+        addrWrap.style.display = "block";
 
-        // Fetch ICS-20 balances
-        statusEl.textContent = "Loading ICS-20 balances…";
-        const list = await fetchIcs20Balances(fromAddress);
+        statusEl.textContent = "Fetching ICS-20 balances…";
+        const ibcCoins = await getIbcBalances(client, address);
 
-        tbody.innerHTML = "";
         tableWrap.style.display = "block";
-
-        if (!list.length) {
+        if (ibcCoins.length === 0) {
           statusEl.innerHTML = "No ICS-20 balances found on this address.";
+          tbody.innerHTML = "";
           return;
         }
 
-        statusEl.textContent = `Found ${list.length} IBC asset${list.length>1?"s":""}. Resolving symbols…`;
-
-        // Render fast with placeholders, then enhance labels/decimals as we resolve
-        for (const coin of list) {
-          const ibcDenom = coin.denom;
-          const amountMinimal = coin.amount;
-
-          // placeholder
-          renderRow({ ibcDenom, amountMinimal, label: "Loading…", decimals: DEFAULT_DECIMALS });
-
-          // resolve in background
-          (async () => {
-            let label = null, decimals = DEFAULT_DECIMALS;
-            const base = await getDenomTrace(ibcDenom); // e.g., "uatom"
-            if (base) {
-              const md = await getDenomMetadata(base);
-              if (md) { label = md.display?.toUpperCase?.() || base; decimals = md.decimals ?? DEFAULT_DECIMALS; }
-              else { label = base.toUpperCase(); }
-            }
-            // update last row that matches this denom (simple approach)
-            const rows = Array.from(tbody.querySelectorAll("tr"));
-            for (let i = rows.length - 1; i >= 0; i--) {
-              const tds = rows[i].querySelectorAll("td");
-              if (tds[1] && tds[1].textContent === ibcDenom) {
-                tds[0].innerHTML = `<span class="pill">${label || base || "—"}</span><br/><span class="tag">${decimals} decimals</span>`;
-                tds[2].textContent = humanAmount(amountMinimal, decimals);
-                tds[4].textContent = String(decimals);
-                break;
-              }
-            }
-          })();
-        }
-
-        statusEl.textContent = "Done.";
+        renderBalances(ibcCoins);
+        statusEl.textContent = `Found ${ibcCoins.length} IBC asset${ibcCoins.length>1?"s":""}.`;
       } catch (e) {
         console.error(e);
         statusEl.innerHTML = `<span class="error">❌ ${e?.message || e}</span>`;
-        if ((e?.message || "").includes("CosmJS")) {
-          warnEl.innerHTML = "If loading fails, disable content blockers, or a strict CSP may be blocking CDNs.";
-        }
+        addDiag("Tip: serve over https:// (not file://) and disable content blockers on this page.");
       }
     };
   </script>
