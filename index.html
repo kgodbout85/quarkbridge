@@ -19,33 +19,39 @@
       padding: 2rem;
       border-radius: 1rem;
       box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-      max-width: 400px;
+      max-width: 420px;
       width: 100%;
     }
     h1 { text-align: center; margin-bottom: 1rem; }
-    input, button {
+    label { font-size: 0.9rem; color:#374151; }
+    input, select, button {
       width: 100%;
       padding: 0.75rem;
       margin: 0.5rem 0;
       border-radius: 0.5rem;
       border: 1px solid #ddd;
       font-size: 1rem;
+      background: #fff;
     }
+    .row { display:flex; gap:.5rem; flex-wrap:wrap }
+    .row button { flex:1 }
     button {
       background: #4f46e5;
       color: white;
       border: none;
       cursor: pointer;
     }
+    button:disabled { opacity: .5; cursor: not-allowed; }
     button:hover { background: #4338ca; }
     p.status { text-align: center; margin-top: 1rem; }
-    p.balance { text-align: center; margin-top: 0.5rem; color: #111827; font-weight: bold; }
-    p.warn { color: #b91c1c; text-align:center; }
+    p.warn { color:#b91c1c; text-align:center }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .muted { color:#6b7280; font-size:.9rem }
   </style>
 
   <!-- CosmJS UMD bundle (primary) -->
   <script src="https://unpkg.com/@cosmjs/stargate@0.31.2/build/index.min.js"></script>
-  <!-- Fallback CDN if the first one is blocked/slow -->
+  <!-- Fallback CDN if the first one is slow/blocked -->
   <script>
     (function ensureCosmjs(){
       setTimeout(function(){
@@ -62,13 +68,35 @@
   <div class="card">
     <h1>QUARK Bridge</h1>
     <p style="text-align:center">
-      Send QUARK from <b>Cosmos Hub</b> → <b>Osmosis</b> using Keplr
+      Bridge any Cosmos balance to <b>Osmosis</b> (channel-141) using Keplr
     </p>
 
     <button id="connectBtn">Connect Keplr</button>
-    <p id="balance" class="balance" style="display:none"></p>
 
-    <input id="amount" type="number" placeholder="Amount of QUARK" disabled />
+    <div id="addrBox" class="muted" style="display:none">
+      Cosmos: <span class="mono" id="fromAddr"></span><br/>
+      Osmosis: <span class="mono" id="toAddr"></span>
+    </div>
+
+    <div id="balanceUI" style="display:none">
+      <label for="denomSelect">Select a token (denom)</label>
+      <select id="denomSelect"></select>
+
+      <div class="muted">
+        Available: <span class="mono" id="balWhole">0.000000</span>
+        (<span class="mono" id="balMinimal">0</span> minimal units)
+      </div>
+
+      <label for="amount">Amount</label>
+      <input id="amount" type="number" placeholder="e.g., 1.5" step="0.000001" min="0" disabled />
+
+      <div class="row">
+        <button id="btn50" disabled>50%</button>
+        <button id="btn75" disabled>75%</button>
+        <button id="btnMax" disabled>Max</button>
+      </div>
+    </div>
+
     <button id="bridgeBtn" disabled>Bridge</button>
 
     <p id="status" class="status"></p>
@@ -76,71 +104,117 @@
   </div>
 
   <script>
-    // --- Config ---
-    const denom     = "ibc/7B6EBFC446E50DFF981C994E207BFB398889706C2B0DF8A14D8B87F6C0E33A1A"; // QUARK on Cosmos (IBC)
-    const channel   = "channel-141"; // Cosmos → Osmosis
+    // ---- Config ----
+    const CHANNEL   = "channel-141"; // Cosmos → Osmosis
     const RPC       = "https://rpc.cosmoshub.strange.love";
-    const DECIMALS  = 6;
+    const DEFAULT_DECIMALS = 6; // most Cosmos assets use 6
 
     let fromAddress = "";
     let toAddress   = "";
     let cosmosSigner;
+
+    let allBalances = [];        // full list from getAllBalances()
+    let selectedDenom = "";      // user-selected denom
+    let selectedBalMinimal = 0n; // balance of selected denom (minimal units)
 
     const connectBtn  = document.getElementById("connectBtn");
     const bridgeBtn   = document.getElementById("bridgeBtn");
     const amountInput = document.getElementById("amount");
     const statusEl    = document.getElementById("status");
     const warningEl   = document.getElementById("warning");
-    const balanceEl   = document.getElementById("balance");
+    const addrBox     = document.getElementById("addrBox");
+    const fromAddrEl  = document.getElementById("fromAddr");
+    const toAddrEl    = document.getElementById("toAddr");
+    const denomSelect = document.getElementById("denomSelect");
+    const balanceUI   = document.getElementById("balanceUI");
+    const balWholeEl  = document.getElementById("balWhole");
+    const balMinEl    = document.getElementById("balMinimal");
+
+    const btn50 = document.getElementById("btn50");
+    const btn75 = document.getElementById("btn75");
+    const btnMax = document.getElementById("btnMax");
 
     if (!window.keplr) {
       warningEl.textContent = "⚠️ Keplr not detected. Open this page on HTTPS with Keplr installed/enabled.";
     }
 
-    const toWhole = (minimal) => (Number(minimal || 0) / Math.pow(10, DECIMALS)).toFixed(6);
-    const toMinimal = (whole) => String(Math.round(Number(whole) * Math.pow(10, DECIMALS)));
+    const toWhole = (minimal, dec = DEFAULT_DECIMALS) => (Number(minimal || 0) / Math.pow(10, dec)).toFixed(6);
+    const toMinimal = (whole, dec = DEFAULT_DECIMALS) => String(Math.round(Number(whole) * Math.pow(10, dec)));
 
     async function ensureCosmjsReady() {
-      // Wait up to ~2s for either CDN to load
       const start = Date.now();
-      while (!window.cosmjs && Date.now() - start < 2000) {
+      while (!window.cosmjs && Date.now() - start < 2500) {
         await new Promise(r => setTimeout(r, 100));
       }
-      if (!window.cosmjs) throw new Error("CosmJS failed to load. Try refresh or disable content blockers.");
+      if (!window.cosmjs) throw new Error("CosmJS failed to load. Refresh or disable content blockers.");
     }
 
-    // Fetch QUARK balance (uses getAllBalances so 'not found' returns 0)
-    async function fetchQuarkBalance() {
-      try {
-        if (!fromAddress) return;
-        await ensureCosmjsReady();
-        const { StargateClient } = window.cosmjs;
-        if (!StargateClient) throw new Error("CosmJS (StargateClient) unavailable");
+    async function fetchAllBalances() {
+      await ensureCosmjsReady();
+      const { StargateClient } = window.cosmjs;
+      const q = await StargateClient.connect(RPC);
+      const list = await q.getAllBalances(fromAddress);
+      return list || [];
+    }
 
-        const q = await StargateClient.connect(RPC);
-        const all = await q.getAllBalances(fromAddress);
-        const found = (all || []).find((c) => c.denom === denom);
-        const amtMin = found ? found.amount : "0";
+    function populateDenoms(list) {
+      denomSelect.innerHTML = "";
+      // Sort: show IBC/factory denoms first, then others; also sort alphabetically
+      list.sort((a,b) => {
+        const aKey = (a.denom.startsWith("ibc/") || a.denom.startsWith("factory/")) ? "0"+a.denom : "1"+a.denom;
+        const bKey = (b.denom.startsWith("ibc/") || b.denom.startsWith("factory/")) ? "0"+b.denom : "1"+b.denom;
+        return aKey.localeCompare(bKey);
+      });
 
-        balanceEl.style.display = "block";
-        balanceEl.textContent = `Available: ${toWhole(amtMin)} QUARK`;
-      } catch (e) {
-        console.error("Balance fetch error:", e);
-        balanceEl.style.display = "block";
-        balanceEl.textContent = "Available: 0.000000 QUARK";
+      for (const c of list) {
+        const opt = document.createElement("option");
+        opt.value = c.denom;
+        // assume 6 decimals for display; shows minimal too below
+        opt.textContent = `${c.denom}`;
+        denomSelect.appendChild(opt);
       }
+
+      // If the known QUARK IBC denom exists, preselect it; otherwise first item
+      const quarkIbc = "ibc/7B6EBFC446E50DFF981C994E207BFB398889706C2B0DF8A14D8B87F6C0E33A1A";
+      if (list.find(c => c.denom === quarkIbc)) {
+        denomSelect.value = quarkIbc;
+      } else if (list.length > 0) {
+        denomSelect.value = list[0].denom;
+      }
+
+      updateSelectedBalance();
     }
+
+    function updateSelectedBalance() {
+      selectedDenom = denomSelect.value;
+      const coin = allBalances.find(c => c.denom === selectedDenom) || { amount: "0" };
+      selectedBalMinimal = BigInt(coin.amount || "0");
+      balMinEl.textContent = selectedBalMinimal.toString();
+      balWholeEl.textContent = toWhole(selectedBalMinimal);
+      amountInput.disabled = false;
+      btn50.disabled = btn75.disabled = btnMax.disabled = false;
+      bridgeBtn.disabled = false;
+    }
+
+    btn50.onclick = () => {
+      const half = (selectedBalMinimal * 50n) / 100n;
+      amountInput.value = toWhole(half);
+    };
+    btn75.onclick = () => {
+      const threeQ = (selectedBalMinimal * 75n) / 100n;
+      amountInput.value = toWhole(threeQ);
+    };
+    btnMax.onclick = () => { amountInput.value = toWhole(selectedBalMinimal); };
+
+    denomSelect.onchange = updateSelectedBalance;
 
     connectBtn.onclick = async () => {
       try {
-        if (!window.keplr) {
-          alert("Keplr not found. Make sure it's installed and allowed on this site.");
-          return;
-        }
+        if (!window.keplr) { alert("Keplr not found. Make sure it's installed and allowed on this site."); return; }
 
+        // Enable both chains (your original working flow)
         await window.keplr.enable(["cosmoshub-4", "osmosis-1"]);
 
-        // Use your original (legacy) helpers since that worked for you
         cosmosSigner = window.getOfflineSigner("cosmoshub-4");
         const cosmosAccounts = await cosmosSigner.getAccounts();
         fromAddress = cosmosAccounts[0]?.address || "";
@@ -149,13 +223,25 @@
         const osmoAccounts = await osmoSigner.getAccounts();
         toAddress = osmoAccounts[0]?.address || "";
 
-        connectBtn.disabled  = true;
-        amountInput.disabled = false;
-        bridgeBtn.disabled   = false;
+        connectBtn.disabled = true;
         statusEl.textContent = "✅ Keplr connected!";
         warningEl.textContent = "";
 
-        await fetchQuarkBalance();
+        // Show addresses
+        fromAddrEl.textContent = fromAddress || "—";
+        toAddrEl.textContent = toAddress || "—";
+        addrBox.style.display = "block";
+
+        // Fetch balances and populate UI
+        statusEl.textContent = "Fetching balances…";
+        allBalances = await fetchAllBalances();
+        if (!allBalances.length) {
+          statusEl.textContent = "No balances found on Cosmos for this address.";
+        } else {
+          statusEl.textContent = "Balances loaded.";
+        }
+        balanceUI.style.display = "block";
+        populateDenoms(allBalances);
       } catch (err) {
         console.error(err);
         statusEl.textContent = "❌ Error connecting: " + (err?.message || err);
@@ -164,17 +250,18 @@
 
     bridgeBtn.onclick = async () => {
       try {
-        const amount = parseFloat(amountInput.value);
-        if (!amount || amount <= 0) {
-          alert("Enter a valid amount of QUARK.");
+        const amt = Number((amountInput.value || "").trim());
+        if (!amt || amt <= 0) { alert("Enter a valid amount."); return; }
+        const minimal = toMinimal(amt);
+
+        if (BigInt(minimal) > selectedBalMinimal) {
+          alert("Amount exceeds available balance.");
           return;
         }
 
         await ensureCosmjsReady();
         const { SigningStargateClient } = window.cosmjs || {};
-        if (!SigningStargateClient) {
-          throw new Error("CosmJS (SigningStargateClient) unavailable");
-        }
+        if (!SigningStargateClient) throw new Error("CosmJS (SigningStargateClient) unavailable");
 
         const client = await SigningStargateClient.connectWithSigner(RPC, cosmosSigner);
 
@@ -182,24 +269,31 @@
           typeUrl: "/ibc.applications.transfer.v1.MsgTransfer",
           value: {
             sourcePort: "transfer",
-            sourceChannel: channel,
+            sourceChannel: CHANNEL,
             sender: fromAddress,
             receiver: toAddress,
-            token: { denom, amount: toMinimal(amount) },
+            token: { denom: selectedDenom, amount: minimal },
             timeoutHeight: {},
-            timeoutTimestamp: String((Date.now() + 600_000) * 1e6), // +10 min in ns
+            timeoutTimestamp: String((Date.now() + 10 * 60 * 1000) * 1e6),
           },
         };
 
+        // conservative static fee (no GasPrice usage)
         const fee = { amount: [{ denom: "uatom", amount: "5000" }], gas: "200000" };
 
-        const result = await client.signAndBroadcast(fromAddress, [msg], fee);
+        statusEl.textContent = "Broadcasting…";
+        const res = await client.signAndBroadcast(fromAddress, [msg], fee);
 
-        if (result.code === 0) {
-          statusEl.textContent = "✅ Success! QUARK bridged to Osmosis.";
-          await fetchQuarkBalance(); // refresh after send
+        if (res.code === 0) {
+          statusEl.textContent = "✅ Success! Bridged to Osmosis.";
+          // Refresh the balances after a short delay
+          setTimeout(async () => {
+            allBalances = await fetchAllBalances();
+            populateDenoms(allBalances);
+            statusEl.textContent = "Updated balances.";
+          }, 2500);
         } else {
-          statusEl.textContent = "❌ Failed: " + result.rawLog;
+          statusEl.textContent = "❌ Failed: " + (res.rawLog || ("code " + res.code));
         }
       } catch (err) {
         console.error(err);
