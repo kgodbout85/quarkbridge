@@ -24,7 +24,7 @@
     a.link { color:#9fb2ff; text-decoration: underline }
   </style>
 
-  <!-- CosmJS UMD (primary + fallback); ESM fallback attaches window.cosmjs -->
+  <!-- CosmJS UMD (primary + fallback). If blocked, we ESM-import in boot(). -->
   <script>
     (function loadCosmjsUMD() {
       function add(src){ const s=document.createElement("script"); s.src=src; s.async=true; document.head.appendChild(s); }
@@ -39,7 +39,7 @@
     <p class="sub">Cosmos Hub (cosmoshub-4) → Osmosis via <b>channel-141</b></p>
 
     <div class="row" style="margin-bottom:8px">
-      <button id="connectBtn" type="button">Connect Keplr</button>
+      <button id="connectBtn" type="button" disabled>Initializing…</button>
       <span id="status" class="status"></span>
     </div>
 
@@ -85,12 +85,14 @@
     <div id="txWrap" style="display:none; margin-top:10px">
       <span>Tx: <a id="txLink" target="_blank" rel="noopener" class="link">View in explorer</a></span>
     </div>
+
+    <div id="diag" class="rpc" style="margin-top:10px"></div>
   </div>
 
   <script>
     // ---------- Config ----------
     const CHANNEL = "channel-141"; // Cosmos → Osmosis
-    const DEFAULT_DECIMALS = 6;    // display assumption
+    const DEFAULT_DECIMALS = 6;
     const GAS_PRICE = 0.035;       // uatom per gas
     const GAS_BUFFER = 1.6;        // 60% over simulate
 
@@ -110,6 +112,8 @@
     let signingClient = null;         // SigningStargateClient (tx)
     let signer = null;
     let balances = [];                // ibc/* non-zero balances
+    let connectInFlight = false;
+    let connected = false;
     let inFlight = false;
 
     // ---------- UI ----------
@@ -120,31 +124,82 @@
     const osmoAddrEl  = document.getElementById("osmoAddr");
     const rpcUsedEl   = document.getElementById("rpcUsed");
     const formWrap    = document.getElementById("formWrap");
-
     const denomSelect = document.getElementById("denomSelect");
     const amountInput = document.getElementById("amount");
     const balMinimalEl= document.getElementById("balMinimal");
     const balHumanEl  = document.getElementById("balHuman");
     const memoInput   = document.getElementById("memo");
-
     const btn50 = document.getElementById("btn50");
     const btn75 = document.getElementById("btn75");
     const btnMax = document.getElementById("btnMax");
     const sendBtn = document.getElementById("sendBtn");
-
     const txWrap = document.getElementById("txWrap");
     const txLink = document.getElementById("txLink");
+    const diagEl = document.getElementById("diag");
 
-    // ---------- CosmJS loader fallback (UMD → ESM) ----------
+    // ---------- Boot: wait for Keplr & CosmJS BEFORE enabling the button ----------
+    function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+    function addDiag(msg){ const d=document.createElement("div"); d.textContent=msg; diagEl.appendChild(d); }
+
     async function ensureCosmjsReady() {
       const start = Date.now();
       while (!window.cosmjs && Date.now() - start < 2500) {
-        await new Promise(r => setTimeout(r, 100));
+        await sleep(100);
       }
       if (window.cosmjs) return;
-      const mod = await import("https://esm.sh/@cosmjs/stargate@0.31.2?bundle");
-      window.cosmjs = { StargateClient: mod.StargateClient, SigningStargateClient: mod.SigningStargateClient };
+      try {
+        const mod = await import("https://esm.sh/@cosmjs/stargate@0.31.2?bundle");
+        window.cosmjs = { StargateClient: mod.StargateClient, SigningStargateClient: mod.SigningStargateClient };
+      } catch (e) {
+        addDiag("ESM import failed (CSP?): " + (e?.message || e));
+        throw new Error("CosmJS failed to load.");
+      }
     }
+
+    async function waitForKeplr(timeoutMs=10000) {
+      const start = Date.now();
+      while (!window.keplr && Date.now() - start < timeoutMs) {
+        await sleep(100);
+      }
+      if (!window.keplr) throw new Error("Keplr not detected. Use HTTPS and enable the extension.");
+    }
+
+    async function boot() {
+      try {
+        statusEl.textContent = "Preparing wallet…";
+        await Promise.all([ensureCosmjsReady(), waitForKeplr()]);
+        statusEl.textContent = "Ready to connect.";
+        connectBtn.textContent = "Connect Keplr";
+        connectBtn.disabled = false;
+
+        // Update UI automatically if user switches accounts in Keplr
+        window.addEventListener("keplr_keystorechange", async () => {
+          if (!connected) return;
+          try {
+            await window.keplr.enable(["cosmoshub-4", "osmosis-1"]);
+            const cosSigner = window.getOfflineSigner("cosmoshub-4");
+            const cosAcc = await cosSigner.getAccounts();
+            cosmosAddr = cosAcc[0]?.address || cosmosAddr;
+            cosmosAddrEl.textContent = cosmosAddr;
+
+            const osmoSigner = window.getOfflineSigner("osmosis-1");
+            const osmoAcc = await osmoSigner.getAccounts();
+            osmoAddr = osmoAcc[0]?.address || osmoAddr;
+            osmoAddrEl.textContent = osmoAddr;
+
+            // refresh balances
+            balances = await getIbcBalances(cosmosAddr);
+            populateDropdown();
+            statusEl.textContent = "Account changed. Updated balances.";
+          } catch (e) {
+            addDiag("keystorechange refresh failed: " + (e?.message || e));
+          }
+        });
+      } catch (e) {
+        statusEl.innerHTML = `<span class="error">❌ ${e?.message || e}</span>`;
+      }
+    }
+    document.addEventListener("DOMContentLoaded", boot);
 
     // ---------- Helpers ----------
     function toHuman(minimalStr, dec = DEFAULT_DECIMALS) {
@@ -163,7 +218,6 @@
     }
 
     async function connectAnyRpc() {
-      await ensureCosmjsReady();
       const { StargateClient } = window.cosmjs;
       for (const rpc of RPC_CANDIDATES) {
         try {
@@ -171,7 +225,9 @@
           await c.getHeight();
           connectedRpc = rpc;
           return c;
-        } catch (_) {}
+        } catch (e) {
+          addDiag(`RPC failed: ${rpc} — ${e?.message || e}`);
+        }
       }
       throw new Error("All Cosmos Hub RPCs failed (CORS/offline).");
     }
@@ -208,13 +264,11 @@
     }
 
     async function warmUpSigning() {
-      // create signing client once, *before* first send
       const { SigningStargateClient } = window.cosmjs;
       signingClient = await SigningStargateClient.connectWithSigner(connectedRpc, signer, {
         broadcastTimeoutMs: 60_000,
         broadcastPollIntervalMs: 3_000,
       });
-      // touch the account/sequence so first real click doesn't have to
       await signingClient.getSequence(cosmosAddr);
     }
 
@@ -234,9 +288,7 @@
       while (attempt < 3) {
         attempt++;
         try {
-          // ensure client & fresh sequence
           await signingClient.getSequence(cosmosAddr);
-
           const msg = {
             typeUrl: "/ibc.applications.transfer.v1.MsgTransfer",
             value: {
@@ -246,10 +298,9 @@
               receiver: osmoAddr,
               token: { denom: coin.denom, amount: minimal },
               timeoutHeight: {},
-              timeoutTimestamp: String((Date.now() + 20 * 60 * 1000) * 1e6), // +20 min ns
+              timeoutTimestamp: String((Date.now() + 20 * 60 * 1000) * 1e6), // +20 min
             },
           };
-
           statusEl.textContent = attempt === 1 ? "Simulating gas…" : `Simulating gas… (retry ${attempt})`;
           const gasEst = await signingClient.simulate(cosmosAddr, [msg], memo || "");
           const gas = Math.ceil(gasEst * GAS_BUFFER);
@@ -257,11 +308,9 @@
             gas: String(gas),
             amount: [{ denom: "uatom", amount: String(Math.ceil(gas * GAS_PRICE)) }],
           };
-
           statusEl.textContent = attempt === 1 ? "Broadcasting…" : `Broadcasting… (retry ${attempt})`;
           const res = await signingClient.signAndBroadcast(cosmosAddr, [msg], fee, memo || "");
           if (res.code === 0) return res;
-
           const raw = res.rawLog || `code ${res.code}`;
           if (!wantRetry(raw)) throw new Error(raw);
           lastErr = new Error(raw);
@@ -269,7 +318,7 @@
           const em = e?.message || String(e);
           if (!wantRetry(em)) throw e;
           lastErr = e;
-          await new Promise(r=>setTimeout(r, 1200 * attempt));
+          await sleep(1200 * attempt);
         }
       }
       throw lastErr || new Error("Broadcast failed.");
@@ -283,40 +332,46 @@
 
     connectBtn.onclick = async () => {
       try {
-        statusEl.textContent = "Connecting Keplr…";
-        if (!window.keplr) throw new Error("Keplr not detected. Use HTTPS and enable the extension.");
+        if (connectInFlight || connected) return;
+        connectInFlight = true;
+        connectBtn.disabled = true;
+        connectBtn.textContent = "Connecting…";
+        statusEl.textContent = "Requesting Keplr permission…";
+
+        // Make sure both are ready (extra safety if user clicked instantly after boot)
+        await Promise.all([ensureCosmjsReady(), waitForKeplr()]);
 
         await window.keplr.enable(["cosmoshub-4", "osmosis-1"]);
 
+        // Addresses
         signer = window.getOfflineSigner("cosmoshub-4");
         const cosAcc = await signer.getAccounts();
         cosmosAddr = cosAcc[0]?.address || "";
-
         const osmoSigner = window.getOfflineSigner("osmosis-1");
         const osmoAcc = await osmoSigner.getAccounts();
         osmoAddr = osmoAcc[0]?.address || "";
-
         if (!cosmosAddr || !osmoAddr) throw new Error("Missing Cosmos/Osmosis accounts.");
 
         statusEl.textContent = "Finding RPC…";
-        queryClient = await (async () => {
-          await ensureCosmjsReady();
-          const { StargateClient } = window.cosmjs;
-          for (const rpc of RPC_CANDIDATES) {
-            try {
-              const c = await StargateClient.connect(rpc);
-              await c.getHeight();
-              connectedRpc = rpc;
-              return c;
-            } catch (_) {}
+        const { StargateClient } = window.cosmjs;
+        for (const rpc of RPC_CANDIDATES) {
+          try {
+            const c = await StargateClient.connect(rpc);
+            await c.getHeight();
+            connectedRpc = rpc;
+            queryClient = c;
+            break;
+          } catch (e) {
+            addDiag(`RPC failed: ${rpc} — ${e?.message || e}`);
           }
-          throw new Error("All Cosmos Hub RPCs failed (CORS/offline).");
-        })();
+        }
+        if (!queryClient) throw new Error("All Cosmos Hub RPCs failed (CORS/offline).");
 
-        // Build signing client now (prevents first-click hang)
+        // Warm up signing client now, so first send works immediately
         statusEl.textContent = "Preparing signer…";
         await warmUpSigning();
 
+        // UI updates
         cosmosAddrEl.textContent = cosmosAddr;
         osmoAddrEl.textContent = osmoAddr;
         rpcUsedEl.textContent = connectedRpc;
@@ -326,15 +381,22 @@
         balances = await getIbcBalances(cosmosAddr);
         if (balances.length === 0) {
           statusEl.innerHTML = "No IBC balances found on Cosmos Hub.";
-          return;
+        } else {
+          populateDropdown();
+          formWrap.style.display = "block";
+          statusEl.textContent = "Connected.";
         }
 
-        populateDropdown();
-        formWrap.style.display = "block";
-        statusEl.textContent = "Ready.";
+        // Lock the button to indicate success (no second press needed)
+        connected = true;
+        connectBtn.textContent = "Connected ✅";
       } catch (e) {
         console.error(e);
         statusEl.innerHTML = `<span class="error">❌ ${e?.message || e}</span>`;
+        connectBtn.textContent = "Connect Keplr";
+        connectBtn.disabled = false; // allow a re-try if something failed
+      } finally {
+        connectInFlight = false;
       }
     };
 
@@ -355,7 +417,7 @@
         txWrap.style.display = "none";
         statusEl.textContent = "Preparing transaction…";
 
-        // Make sure Keplr permissions are still live (Edge cases)
+        // Ensure permissions still live (rare edge case)
         await window.keplr.enable(["cosmoshub-4", "osmosis-1"]);
 
         const res = await sendIbcWithRetries(coin, minimal, memoInput.value || "");
@@ -368,7 +430,7 @@
           txLink.textContent = hash;
         }
 
-        // Refresh the selected denom
+        // Refresh selected denom
         setTimeout(async () => {
           const fresh = await queryClient.getAllBalances(cosmosAddr);
           const updated = fresh.find(x => x.denom === coin.denom) || { amount:"0", denom: coin.denom };
