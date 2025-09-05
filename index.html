@@ -56,21 +56,19 @@
           <select id="denomSelect"></select>
         </div>
         <div>
-          <label for="amount">Amount (human, ~6dp)</label>
+          <label for="amount">Amount (human, ~6 dp)</label>
           <input id="amount" type="number" placeholder="e.g., 1.5" step="0.000001" min="0" />
         </div>
       </div>
 
-      <div class="grid" style="margin-top:6px">
-        <div>
-          <small>Available (minimal): <span id="balMinimal" class="mono">0</span></small><br/>
-          <small>Available (~human): <span id="balHuman" class="mono">0.000000</span></small>
-        </div>
-        <div class="row">
-          <button id="btn50" type="button">50%</button>
-          <button id="btn75" type="button">75%</button>
-          <button id="btnMax" type="button">Max</button>
-        </div>
+      <div style="margin-top:6px">
+        <small>Available (human): <span id="balHuman" class="mono">0.000000</span></small>
+      </div>
+
+      <div class="row" style="margin-top:6px">
+        <button id="btn50" type="button">50%</button>
+        <button id="btn75" type="button">75%</button>
+        <button id="btnMax" type="button">Max</button>
       </div>
 
       <div class="row" style="margin-top:10px">
@@ -95,6 +93,7 @@
     const DEFAULT_DECIMALS = 6;
     const GAS_PRICE = 0.035;       // uatom per gas
     const GAS_BUFFER = 1.6;        // 60% over simulate
+    const QUARK_IBC = "ibc/7B6EBFC446E50DFF981C994E207BFB398889706C2B0DF8A14D8B87F6C0E33A1A";
 
     const RPC_CANDIDATES = [
       "https://rpc.cosmos.directory/cosmoshub",
@@ -126,7 +125,6 @@
     const formWrap    = document.getElementById("formWrap");
     const denomSelect = document.getElementById("denomSelect");
     const amountInput = document.getElementById("amount");
-    const balMinimalEl= document.getElementById("balMinimal");
     const balHumanEl  = document.getElementById("balHuman");
     const memoInput   = document.getElementById("memo");
     const btn50 = document.getElementById("btn50");
@@ -137,7 +135,7 @@
     const txLink = document.getElementById("txLink");
     const diagEl = document.getElementById("diag");
 
-    // ---------- Boot: wait for Keplr & CosmJS BEFORE enabling the button ----------
+    // ---------- Boot ----------
     function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
     function addDiag(msg){ const d=document.createElement("div"); d.textContent=msg; diagEl.appendChild(d); }
 
@@ -155,7 +153,6 @@
         throw new Error("CosmJS failed to load.");
       }
     }
-
     async function waitForKeplr(timeoutMs=10000) {
       const start = Date.now();
       while (!window.keplr && Date.now() - start < timeoutMs) {
@@ -163,7 +160,6 @@
       }
       if (!window.keplr) throw new Error("Keplr not detected. Use HTTPS and enable the extension.");
     }
-
     async function boot() {
       try {
         statusEl.textContent = "Preparing wallet…";
@@ -172,7 +168,6 @@
         connectBtn.textContent = "Connect Keplr";
         connectBtn.disabled = false;
 
-        // Update UI automatically if user switches accounts in Keplr
         window.addEventListener("keplr_keystorechange", async () => {
           if (!connected) return;
           try {
@@ -187,7 +182,6 @@
             osmoAddr = osmoAcc[0]?.address || osmoAddr;
             osmoAddrEl.textContent = osmoAddr;
 
-            // refresh balances
             balances = await getIbcBalances(cosmosAddr);
             populateDropdown();
             statusEl.textContent = "Account changed. Updated balances.";
@@ -216,7 +210,6 @@
       sendBtn.disabled = disabled;
       memoInput.disabled = disabled;
     }
-
     async function connectAnyRpc() {
       const { StargateClient } = window.cosmjs;
       for (const rpc of RPC_CANDIDATES) {
@@ -231,38 +224,33 @@
       }
       throw new Error("All Cosmos Hub RPCs failed (CORS/offline).");
     }
-
     async function getIbcBalances(addr) {
       const coins = await queryClient.getAllBalances(addr);
       return (coins || []).filter(c => c.denom?.startsWith("ibc/") && BigInt(c.amount || "0") > 0n);
     }
-
     function populateDropdown() {
       denomSelect.innerHTML = "";
       balances.sort((a,b)=>a.denom.localeCompare(b.denom));
       for (const c of balances) {
+        const isQuark = c.denom === QUARK_IBC;
         const opt = document.createElement("option");
         opt.value = c.denom;
-        opt.textContent = `${c.denom} — ${toHuman(c.amount)} (~${c.amount} minimal)`;
+        opt.textContent = `${isQuark ? "QUARK — " : ""}${c.denom} — ${toHuman(c.amount)}`;
         denomSelect.appendChild(opt);
       }
       if (balances.length > 0) {
-        denomSelect.value = balances[0].denom;
+        denomSelect.value = balances.find(x=>x.denom===QUARK_IBC)?.denom || balances[0].denom;
         updateSelected();
       }
     }
-
     function findSelectedCoin() {
       const denom = denomSelect.value;
       return balances.find(c => c.denom === denom) || { amount:"0", denom };
     }
-
     function updateSelected() {
       const coin = findSelectedCoin();
-      balMinimalEl.textContent = coin.amount;
       balHumanEl.textContent = toHuman(coin.amount);
     }
-
     async function warmUpSigning() {
       const { SigningStargateClient } = window.cosmjs;
       signingClient = await SigningStargateClient.connectWithSigner(connectedRpc, signer, {
@@ -271,7 +259,6 @@
       });
       await signingClient.getSequence(cosmosAddr);
     }
-
     function wantRetry(errMsg) {
       const m = (errMsg || "").toLowerCase();
       return (
@@ -281,7 +268,6 @@
         m.includes("account sequence")
       );
     }
-
     async function sendIbcWithRetries(coin, minimal, memo) {
       let attempt = 0;
       let lastErr;
@@ -298,7 +284,7 @@
               receiver: osmoAddr,
               token: { denom: coin.denom, amount: minimal },
               timeoutHeight: {},
-              timeoutTimestamp: String((Date.now() + 20 * 60 * 1000) * 1e6), // +20 min
+              timeoutTimestamp: String((Date.now() + 20 * 60 * 1000) * 1e6),
             },
           };
           statusEl.textContent = attempt === 1 ? "Simulating gas…" : `Simulating gas… (retry ${attempt})`;
@@ -326,9 +312,9 @@
 
     // ---------- Events ----------
     denomSelect.onchange = updateSelected;
-    btn50.onclick = () => { const c=findSelectedCoin(); amountInput.value = toHuman((BigInt(c.amount)*50n)/100n); };
-    btn75.onclick = () => { const c=findSelectedCoin(); amountInput.value = toHuman((BigInt(c.amount)*75n)/100n); };
-    btnMax.onclick = () => { const c=findSelectedCoin(); amountInput.value = toHuman(BigInt(c.amount)); };
+    btn50.onclick = () => { const c=findSelectedCoin(); const half=(BigInt(c.amount)*50n)/100n; amountInput.value = toHuman(half.toString()); };
+    btn75.onclick = () => { const c=findSelectedCoin(); const three=(BigInt(c.amount)*75n)/100n; amountInput.value = toHuman(three.toString()); };
+    btnMax.onclick = () => { const c=findSelectedCoin(); amountInput.value = toHuman(c.amount); };
 
     connectBtn.onclick = async () => {
       try {
@@ -338,9 +324,7 @@
         connectBtn.textContent = "Connecting…";
         statusEl.textContent = "Requesting Keplr permission…";
 
-        // Make sure both are ready (extra safety if user clicked instantly after boot)
         await Promise.all([ensureCosmjsReady(), waitForKeplr()]);
-
         await window.keplr.enable(["cosmoshub-4", "osmosis-1"]);
 
         // Addresses
@@ -367,11 +351,10 @@
         }
         if (!queryClient) throw new Error("All Cosmos Hub RPCs failed (CORS/offline).");
 
-        // Warm up signing client now, so first send works immediately
+        // Warm signing client now
         statusEl.textContent = "Preparing signer…";
         await warmUpSigning();
 
-        // UI updates
         cosmosAddrEl.textContent = cosmosAddr;
         osmoAddrEl.textContent = osmoAddr;
         rpcUsedEl.textContent = connectedRpc;
@@ -387,14 +370,13 @@
           statusEl.textContent = "Connected.";
         }
 
-        // Lock the button to indicate success (no second press needed)
         connected = true;
         connectBtn.textContent = "Connected ✅";
       } catch (e) {
         console.error(e);
         statusEl.innerHTML = `<span class="error">❌ ${e?.message || e}</span>`;
         connectBtn.textContent = "Connect Keplr";
-        connectBtn.disabled = false; // allow a re-try if something failed
+        connectBtn.disabled = false;
       } finally {
         connectInFlight = false;
       }
@@ -407,7 +389,7 @@
         if (!human || human <= 0) return alert("Enter a valid amount.");
 
         const coin = findSelectedCoin();
-        const minimal = toMinimal(human);
+        const minimal = toMinimal(human); // still uses minimal for precision, just not displayed
         if (BigInt(minimal) > BigInt(coin.amount || "0")) {
           return alert("Amount exceeds available balance.");
         }
@@ -417,9 +399,7 @@
         txWrap.style.display = "none";
         statusEl.textContent = "Preparing transaction…";
 
-        // Ensure permissions still live (rare edge case)
         await window.keplr.enable(["cosmoshub-4", "osmosis-1"]);
-
         const res = await sendIbcWithRetries(coin, minimal, memoInput.value || "");
 
         statusEl.textContent = "✅ Sent!";
@@ -430,7 +410,7 @@
           txLink.textContent = hash;
         }
 
-        // Refresh selected denom
+        // Refresh selected denom (human display only)
         setTimeout(async () => {
           const fresh = await queryClient.getAllBalances(cosmosAddr);
           const updated = fresh.find(x => x.denom === coin.denom) || { amount:"0", denom: coin.denom };
