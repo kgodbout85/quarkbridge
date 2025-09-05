@@ -20,6 +20,8 @@
     .error { color:#ffb4c2 }
     .rpc { font-size:12px; color:#bfc7ee }
     .grid { display:grid; grid-template-columns: 1fr 1fr; gap:12px }
+    small { color:#aab3da }
+    a.link { color:#9fb2ff; text-decoration: underline }
   </style>
 
   <!-- CosmJS UMD (primary + fallback); ESM fallback attaches window.cosmjs -->
@@ -74,6 +76,14 @@
       <div class="row" style="margin-top:10px">
         <button id="sendBtn">Send via channel-141</button>
       </div>
+
+      <div class="row" style="margin-top:6px">
+        <input id="memo" placeholder="Memo (optional)" />
+      </div>
+    </div>
+
+    <div id="txWrap" style="display:none; margin-top:10px">
+      <span>Tx: <a id="txLink" target="_blank" rel="noopener" class="link">View in explorer</a></span>
     </div>
   </div>
 
@@ -81,7 +91,8 @@
     // ---------- Config ----------
     const CHANNEL = "channel-141"; // Cosmos → Osmosis
     const DEFAULT_DECIMALS = 6;    // display assumption
-    const GAS_PRICE = 0.025;       // uatom per gas (simple calc)
+    const GAS_PRICE = 0.035;       // uatom per gas (a bit higher to avoid underfee)
+    const GAS_BUFFER = 1.6;        // 60% buffer on simulate
 
     // Multiple browser-friendly RPCs; we try each until one works.
     const RPC_CANDIDATES = [
@@ -96,9 +107,10 @@
     let cosmosAddr = "";
     let osmoAddr   = "";
     let connectedRpc = "";
-    let client = null;
+    let queryClient = null;  // StargateClient for queries
     let signer = null;
     let balances = [];  // IBC (ibc/…) non-zero balances
+    let inFlight = false;
 
     // ---------- UI ----------
     const connectBtn  = document.getElementById("connectBtn");
@@ -113,11 +125,15 @@
     const amountInput = document.getElementById("amount");
     const balMinimalEl= document.getElementById("balMinimal");
     const balHumanEl  = document.getElementById("balHuman");
+    const memoInput   = document.getElementById("memo");
 
     const btn50 = document.getElementById("btn50");
     const btn75 = document.getElementById("btn75");
     const btnMax = document.getElementById("btnMax");
     const sendBtn = document.getElementById("sendBtn");
+
+    const txWrap = document.getElementById("txWrap");
+    const txLink = document.getElementById("txLink");
 
     // ---------- CosmJS loader fallback (UMD → ESM) ----------
     async function ensureCosmjsReady() {
@@ -138,6 +154,13 @@
     function toMinimal(human, dec = DEFAULT_DECIMALS) {
       return String(Math.round(Number(human) * Math.pow(10, dec)));
     }
+    function disableForm(disabled) {
+      denomSelect.disabled = disabled;
+      amountInput.disabled = disabled;
+      btn50.disabled = btn75.disabled = btnMax.disabled = disabled;
+      sendBtn.disabled = disabled;
+      memoInput.disabled = disabled;
+    }
 
     async function connectAnyRpc() {
       await ensureCosmjsReady();
@@ -154,13 +177,12 @@
     }
 
     async function getIbcBalances(addr) {
-      const coins = await client.getAllBalances(addr);
+      const coins = await queryClient.getAllBalances(addr);
       return (coins || []).filter(c => c.denom?.startsWith("ibc/") && BigInt(c.amount || "0") > 0n);
     }
 
     function populateDropdown() {
       denomSelect.innerHTML = "";
-      // sort for readability
       balances.sort((a,b)=>a.denom.localeCompare(b.denom));
       for (const c of balances) {
         const opt = document.createElement("option");
@@ -185,6 +207,74 @@
       balHumanEl.textContent = toHuman(coin.amount);
     }
 
+    async function buildSigningClient() {
+      const { SigningStargateClient } = window.cosmjs;
+      // Slightly longer timeouts to avoid “must click twice” syndrome on slower RPCs
+      return await SigningStargateClient.connectWithSigner(connectedRpc, signer, {
+        broadcastTimeoutMs: 60_000,
+        broadcastPollIntervalMs: 3_000,
+      });
+    }
+
+    function wantRetry(errMsg) {
+      const m = (errMsg || "").toLowerCase();
+      return (
+        m.includes("timeout") ||
+        m.includes("insufficient") && m.includes("fee") ||
+        m.includes("out of gas") ||
+        m.includes("account sequence")
+      );
+    }
+
+    async function sendIbcWithRetries(coin, minimal, memo) {
+      const { SigningStargateClient } = window.cosmjs;
+      let attempt = 0;
+      let lastErr;
+      while (attempt < 3) {
+        attempt++;
+        try {
+          const signing = await buildSigningClient();
+
+          const msg = {
+            typeUrl: "/ibc.applications.transfer.v1.MsgTransfer",
+            value: {
+              sourcePort: "transfer",
+              sourceChannel: CHANNEL,
+              sender: cosmosAddr,
+              receiver: osmoAddr,
+              token: { denom: coin.denom, amount: minimal },
+              timeoutHeight: {},
+              timeoutTimestamp: String((Date.now() + 20 * 60 * 1000) * 1e6), // +20 min ns
+            },
+          };
+
+          statusEl.textContent = attempt === 1 ? "Simulating gas…" : `Simulating gas… (retry ${attempt})`;
+          const gasEst = await signing.simulate(cosmosAddr, [msg], memo || "");
+          const gas = Math.ceil(gasEst * GAS_BUFFER);
+          const fee = {
+            gas: String(gas),
+            amount: [{ denom: "uatom", amount: String(Math.ceil(gas * GAS_PRICE)) }],
+          };
+
+          statusEl.textContent = attempt === 1 ? "Broadcasting…" : `Broadcasting… (retry ${attempt})`;
+          const res = await signing.signAndBroadcast(cosmosAddr, [msg], fee, memo || "");
+
+          if (res.code === 0) return res;
+
+          const raw = res.rawLog || `code ${res.code}`;
+          if (!wantRetry(raw)) throw new Error(raw);
+          lastErr = new Error(raw);
+        } catch (e) {
+          const em = e?.message || String(e);
+          if (!wantRetry(em)) throw e;
+          lastErr = e;
+          // small backoff
+          await new Promise(r=>setTimeout(r, 1200 * attempt));
+        }
+      }
+      throw lastErr || new Error("Broadcast failed.");
+    }
+
     // ---------- Events ----------
     denomSelect.onchange = updateSelected;
     btn50.onclick = () => { const c=findSelectedCoin(); amountInput.value = toHuman((BigInt(c.amount)*50n)/100n); };
@@ -196,20 +286,32 @@
         statusEl.textContent = "Connecting Keplr…";
         if (!window.keplr) throw new Error("Keplr not detected. Use HTTPS and enable the extension.");
 
-        // Enable chains
         await window.keplr.enable(["cosmoshub-4", "osmosis-1"]);
 
-        // Get addresses
         signer = window.getOfflineSigner("cosmoshub-4");
         const cosAcc = await signer.getAccounts();
         cosmosAddr = cosAcc[0]?.address || "";
+
         const osmoSigner = window.getOfflineSigner("osmosis-1");
         const osmoAcc = await osmoSigner.getAccounts();
         osmoAddr = osmoAcc[0]?.address || "";
+
         if (!cosmosAddr || !osmoAddr) throw new Error("Missing Cosmos/Osmosis accounts.");
 
         statusEl.textContent = "Finding RPC…";
-        client = await connectAnyRpc();
+        queryClient = await (async () => {
+          await ensureCosmjsReady();
+          const { StargateClient } = window.cosmjs;
+          for (const rpc of RPC_CANDIDATES) {
+            try {
+              const c = await StargateClient.connect(rpc);
+              await c.getHeight();
+              connectedRpc = rpc;
+              return c;
+            } catch (_) {}
+          }
+          throw new Error("All Cosmos Hub RPCs failed (CORS/offline).");
+        })();
 
         cosmosAddrEl.textContent = cosmosAddr;
         osmoAddrEl.textContent = osmoAddr;
@@ -234,57 +336,45 @@
 
     sendBtn.onclick = async () => {
       try {
+        if (inFlight) return;
         const human = Number((amountInput.value || "").trim());
         if (!human || human <= 0) return alert("Enter a valid amount.");
+
         const coin = findSelectedCoin();
         const minimal = toMinimal(human);
         if (BigInt(minimal) > BigInt(coin.amount || "0")) {
           return alert("Amount exceeds available balance.");
         }
 
+        inFlight = true;
+        disableForm(true);
+        txWrap.style.display = "none";
+        statusEl.textContent = "Preparing transaction…";
+
         await ensureCosmjsReady();
-        const { SigningStargateClient } = window.cosmjs || {};
-        if (!SigningStargateClient) throw new Error("SigningStargateClient unavailable.");
+        const res = await sendIbcWithRetries(coin, minimal, memoInput.value || "");
 
-        const signing = await SigningStargateClient.connectWithSigner(connectedRpc, signer);
+        statusEl.textContent = "✅ Sent!";
+        const hash = res.transactionHash || "";
+        if (hash) {
+          txWrap.style.display = "block";
+          txLink.href = `https://www.mintscan.io/cosmos/txs/${hash}`;
+          txLink.textContent = hash;
+        }
 
-        const msg = {
-          typeUrl: "/ibc.applications.transfer.v1.MsgTransfer",
-          value: {
-            sourcePort: "transfer",
-            sourceChannel: CHANNEL,
-            sender: cosmosAddr,
-            receiver: osmoAddr,
-            token: { denom: coin.denom, amount: minimal },
-            timeoutHeight: {},
-            timeoutTimestamp: String((Date.now() + 10*60*1000) * 1e6), // +10 min, ns
-          },
-        };
-
-        statusEl.textContent = "Simulating gas…";
-        const gasEst = await signing.simulate(cosmosAddr, [msg], "");
-        const gas = Math.ceil(gasEst * 1.3); // 30% buffer
-        const fee = {
-          gas: String(gas),
-          amount: [{ denom: "uatom", amount: String(Math.ceil(gas * GAS_PRICE)) }],
-        };
-
-        statusEl.textContent = "Broadcasting…";
-        const res = await signing.signAndBroadcast(cosmosAddr, [msg], fee);
-
-        if (res.code === 0) {
-          statusEl.textContent = `✅ Sent! TX hash: ${res.transactionHash || "(available in Keplr)"}`;
-          // Refresh this denom’s balance
-          const fresh = await client.getAllBalances(cosmosAddr);
+        // Refresh this denom’s balance after a short delay
+        setTimeout(async () => {
+          const fresh = await queryClient.getAllBalances(cosmosAddr);
           const updated = fresh.find(x => x.denom === coin.denom) || { amount:"0", denom: coin.denom };
           coin.amount = updated.amount;
           updateSelected();
-        } else {
-          statusEl.textContent = "❌ Failed: " + (res.rawLog || ("code " + res.code));
-        }
+        }, 2500);
       } catch (e) {
         console.error(e);
         statusEl.innerHTML = `<span class="error">❌ ${e?.message || e}</span>`;
+      } finally {
+        inFlight = false;
+        disableForm(false);
       }
     };
   </script>
