@@ -108,12 +108,13 @@
     const CHANNEL   = "channel-141"; // Cosmos → Osmosis
     const RPC       = "https://rpc.cosmoshub.strange.love";
     const DEFAULT_DECIMALS = 6; // most Cosmos assets use 6
+    const QUARK_IBC = "ibc/7B6EBFC446E50DFF981C994E207BFB398889706C2B0DF8A14D8B87F6C0E33A1A";
 
     let fromAddress = "";
     let toAddress   = "";
     let cosmosSigner;
 
-    let allBalances = [];        // full list from getAllBalances()
+    let allBalances = [];        // full list from getAllBalances() + explicit QUARK
     let selectedDenom = "";      // user-selected denom
     let selectedBalMinimal = 0n; // balance of selected denom (minimal units)
 
@@ -138,8 +139,10 @@
       warningEl.textContent = "⚠️ Keplr not detected. Open this page on HTTPS with Keplr installed/enabled.";
     }
 
-    const toWhole = (minimal, dec = DEFAULT_DECIMALS) => (Number(minimal || 0) / Math.pow(10, dec)).toFixed(6);
-    const toMinimal = (whole, dec = DEFAULT_DECIMALS) => String(Math.round(Number(whole) * Math.pow(10, dec)));
+    const toWhole = (minimal, dec = DEFAULT_DECIMALS) =>
+      (Number(minimal || 0) / Math.pow(10, dec)).toFixed(6);
+    const toMinimal = (whole, dec = DEFAULT_DECIMALS) =>
+      String(Math.round(Number(whole) * Math.pow(10, dec)));
 
     async function ensureCosmjsReady() {
       const start = Date.now();
@@ -149,17 +152,33 @@
       if (!window.cosmjs) throw new Error("CosmJS failed to load. Refresh or disable content blockers.");
     }
 
+    // Fetch all non-zero balances, then explicitly query QUARK so it shows up even at 0.
     async function fetchAllBalances() {
       await ensureCosmjsReady();
       const { StargateClient } = window.cosmjs;
       const q = await StargateClient.connect(RPC);
-      const list = await q.getAllBalances(fromAddress);
-      return list || [];
+
+      const list = await q.getAllBalances(fromAddress) || [];
+
+      // Ensure QUARK is present (even at 0)
+      try {
+        const quarkBal = await q.getBalance(fromAddress, QUARK_IBC); // { denom, amount }
+        const existing = list.find(c => c.denom === QUARK_IBC);
+        if (quarkBal) {
+          if (!existing) list.push(quarkBal);
+          else existing.amount = quarkBal.amount;
+        }
+      } catch (e) {
+        console.debug("QUARK balance check error:", e?.message || e);
+      }
+
+      return list;
     }
 
     function populateDenoms(list) {
       denomSelect.innerHTML = "";
-      // Sort: show IBC/factory denoms first, then others; also sort alphabetically
+
+      // Sort: IBC/factory first, then alphabetical
       list.sort((a,b) => {
         const aKey = (a.denom.startsWith("ibc/") || a.denom.startsWith("factory/")) ? "0"+a.denom : "1"+a.denom;
         const bKey = (b.denom.startsWith("ibc/") || b.denom.startsWith("factory/")) ? "0"+b.denom : "1"+b.denom;
@@ -169,15 +188,12 @@
       for (const c of list) {
         const opt = document.createElement("option");
         opt.value = c.denom;
-        // assume 6 decimals for display; shows minimal too below
-        opt.textContent = `${c.denom}`;
+        opt.textContent = c.denom === QUARK_IBC ? `QUARK (${c.denom})` : c.denom;
         denomSelect.appendChild(opt);
       }
 
-      // If the known QUARK IBC denom exists, preselect it; otherwise first item
-      const quarkIbc = "ibc/7B6EBFC446E50DFF981C994E207BFB398889706C2B0DF8A14D8B87F6C0E33A1A";
-      if (list.find(c => c.denom === quarkIbc)) {
-        denomSelect.value = quarkIbc;
+      if (list.find(c => c.denom === QUARK_IBC)) {
+        denomSelect.value = QUARK_IBC;
       } else if (list.length > 0) {
         denomSelect.value = list[0].denom;
       }
@@ -212,7 +228,7 @@
       try {
         if (!window.keplr) { alert("Keplr not found. Make sure it's installed and allowed on this site."); return; }
 
-        // Enable both chains (your original working flow)
+        // Enable both chains
         await window.keplr.enable(["cosmoshub-4", "osmosis-1"]);
 
         cosmosSigner = window.getOfflineSigner("cosmoshub-4");
@@ -278,7 +294,7 @@
           },
         };
 
-        // conservative static fee (no GasPrice usage)
+        // static fee (uatom)
         const fee = { amount: [{ denom: "uatom", amount: "5000" }], gas: "200000" };
 
         statusEl.textContent = "Broadcasting…";
