@@ -80,6 +80,12 @@
       </div>
 
       <div class="row" style="margin-top:10px">
+        <div class="stack" style="min-width:180px;max-width:240px">
+          <label for="walletSelect">Wallet</label>
+          <select id="walletSelect" disabled>
+            <option value="auto">Detecting…</option>
+          </select>
+        </div>
         <button id="connectBtn" type="button" disabled><span class="spinner" id="bootSpin"></span>Initializing…</button>
         <span id="status" class="status"></span>
         <button id="refreshBtn" class="ghost right" type="button" style="display:none">↻ Refresh balances</button>
@@ -87,6 +93,7 @@
       </div>
 
       <div id="addrWrap" class="addr" style="display:none">
+        <div>Wallet: <span id="walletName" class="mono">—</span></div>
         <div>Cosmos Hub: <span id="cosmosAddr" class="mono"></span></div>
         <div>Osmosis: <span id="osmoAddr" class="mono"></span></div>
         <div>RPC: <span id="rpcUsed" class="mono"></span></div>
@@ -128,7 +135,7 @@
       <details class="diag"><summary>Diagnostics</summary><div id="diag" class="status"></div></details>
     </div>
 
-    <div class="footer">Tip: serve over <b>https://</b>, allow Keplr on this site, and avoid aggressive ad-blockers on first load.</div>
+    <div class="footer">Tip: serve over <b>https://</b>, allow Keplr/Leap on this site, and avoid aggressive ad-blockers on first load.</div>
   </div>
 
   <script>
@@ -156,7 +163,14 @@
     let balances = [];
     let connectInFlight = false, connected = false, inFlight = false;
 
+    // Wallet provider (Keplr/Leap)
+    let WALLET = null;             // object: window.keplr or window.leap
+    let WALLET_ID = "auto";        // "keplr" | "leap"
+    let WALLET_NAME = "—";
+
     // ---------- UI ----------
+    const walletSelect = document.getElementById("walletSelect");
+    const walletNameEl = document.getElementById("walletName");
     const connectBtn  = document.getElementById("connectBtn");
     const bootSpin    = document.getElementById("bootSpin");
     const statusEl    = document.getElementById("status");
@@ -186,7 +200,74 @@
     const setStatus = (m,cls="")=>{ statusEl.className="status "+cls; statusEl.textContent=m||""; };
     const withTimeout=(p,ms,label="op")=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error(label+" timed out")),ms))]);
 
-    // ---------- CosmJS / Keplr readiness ----------
+    function toHuman(min, dec=DEFAULT_DECIMALS){ return (Number(min||0)/Math.pow(10,dec)).toFixed(6); }
+    function toMinimal(h, dec=DEFAULT_DECIMALS){ return String(Math.round(Number(h)*Math.pow(10,dec))); }
+
+    // ---------- Wallet detection & selection ----------
+    function detectWallets(){
+      const list = [];
+      if (window.keplr) list.push({ id:"keplr", name:"Keplr", obj: window.keplr });
+      if (window.leap)  list.push({ id:"leap",  name:"Leap",  obj: window.leap  });
+      return list;
+    }
+
+    function setWalletById(id){
+      const found = id==="keplr" ? window.keplr : id==="leap" ? window.leap : null;
+      WALLET_ID = id;
+      WALLET = found;
+      WALLET_NAME = found ? (id==="keplr" ? "Keplr" : "Leap") : "—";
+      walletNameEl.textContent = WALLET_NAME;
+    }
+
+    async function waitForAnyWallet(timeoutMs=15000){
+      const start = Date.now();
+      while (Date.now() - start < timeoutMs) {
+        if (window.keplr || window.leap) return;
+        await sleep(100);
+      }
+      throw new Error("No Cosmos wallet detected (Keplr/Leap).");
+    }
+
+    function populateWalletSelect(){
+      const wallets = detectWallets();
+      walletSelect.innerHTML = "";
+      if (wallets.length === 0) {
+        const opt = document.createElement("option");
+        opt.value = "none"; opt.textContent = "No wallet detected";
+        walletSelect.appendChild(opt);
+        walletSelect.disabled = true;
+        return;
+      }
+      for (const w of wallets) {
+        const opt = document.createElement("option");
+        opt.value = w.id; opt.textContent = w.name;
+        walletSelect.appendChild(opt);
+      }
+      // Prefer Keplr if both present
+      const defaultId = wallets.find(w=>w.id==="keplr") ? "keplr" : wallets[0].id;
+      walletSelect.value = defaultId;
+      walletSelect.disabled = false;
+      setWalletById(defaultId);
+    }
+
+    walletSelect.onchange = ()=>{
+      setWalletById(walletSelect.value);
+      // On wallet switch, if connected, prompt re-enable and refresh balances
+      if (connected) {
+        (async ()=>{
+          try{
+            setStatus("Switching wallet…");
+            await enableChainsRobust();
+            await hydrateAddresses();
+            balances = await getIbcBalances(cosmosAddr);
+            populateDropdown();
+            setStatus("Wallet switched.", "ok");
+          }catch(e){ setStatus("❌ "+(e?.message||e), "err"); }
+        })();
+      }
+    };
+
+    // ---------- CosmJS readiness ----------
     async function ensureCosmjsReady(){
       const start=Date.now();
       while(!window.cosmjs && Date.now()-start<3000) await sleep(100);
@@ -195,11 +276,6 @@
         const mod = await import("https://esm.sh/@cosmjs/stargate@0.31.2?bundle");
         window.cosmjs = {StargateClient:mod.StargateClient, SigningStargateClient:mod.SigningStargateClient};
       }catch(e){ addDiag("ESM import failed: "+(e?.message||e)); throw new Error("CosmJS failed to load."); }
-    }
-    async function waitForKeplr(timeoutMs=15000){
-      const start=Date.now();
-      while(!window.keplr && Date.now()-start<timeoutMs) await sleep(100);
-      if(!window.keplr) throw new Error("Keplr not detected. Enable the extension.");
     }
 
     // ---------- RPC / Clients ----------
@@ -232,19 +308,37 @@
       throw last||new Error("Failed to fetch balances.");
     }
 
-    // ---------- Wallet helpers ----------
+    // ---------- Wallet helpers (Keplr/Leap compatible) ----------
     async function enableChainsRobust(){
-      try{
-        await withTimeout(window.keplr.enable(["cosmoshub-4","osmosis-1"]), 15000, "Keplr enable");
-      }catch(_){
-        // fallback: enable one by one
-        await withTimeout(window.keplr.enable("cosmoshub-4"), 15000, "Enable cosmoshub-4");
-        await withTimeout(window.keplr.enable("osmosis-1"), 15000, "Enable osmosis-1");
+      if (!WALLET) throw new Error("No wallet selected.");
+      // Try multi-enable first; fall back to sequential
+      if (WALLET.enable) {
+        try {
+          await withTimeout(WALLET.enable(["cosmoshub-4","osmosis-1"]), 15000, "Wallet enable");
+        } catch(_) {
+          await withTimeout(WALLET.enable("cosmoshub-4"), 15000, "Enable cosmoshub-4");
+          await withTimeout(WALLET.enable("osmosis-1"), 15000, "Enable osmosis-1");
+        }
+      } else {
+        // Extremely old injectors: use global enable if present
+        if (window.keplr?.enable || window.leap?.enable) {
+          try { await withTimeout((window.keplr||window.leap).enable(["cosmoshub-4","osmosis-1"]), 15000, "Wallet enable"); }
+          catch(_) {
+            await withTimeout((window.keplr||window.leap).enable("cosmoshub-4"), 15000, "Enable cosmoshub-4");
+            await withTimeout((window.keplr||window.leap).enable("osmosis-1"), 15000, "Enable osmosis-1");
+          }
+        } else {
+          throw new Error("Wallet does not support enable().");
+        }
       }
-      // hydrate keys (prevents empty account edge)
-      await withTimeout(window.keplr.getKey("cosmoshub-4"), 8000, "getKey cosmos");
-      await withTimeout(window.keplr.getKey("osmosis-1"), 8000, "getKey osmo");
+
+      // Hydrate keys (prevents empty account race)
+      if (WALLET.getKey) {
+        await withTimeout(WALLET.getKey("cosmoshub-4"), 8000, "getKey cosmos");
+        await withTimeout(WALLET.getKey("osmosis-1"), 8000, "getKey osmo");
+      }
     }
+
     async function pollAccounts(getter, label){
       const start=Date.now();
       while(Date.now()-start<8000){
@@ -254,21 +348,31 @@
       }
       throw new Error(label+" accounts not available");
     }
+
+    async function getSignerFor(chainId){
+      // Prefer wallet-scoped methods, then fall back to globals
+      if (WALLET?.getOfflineSignerAuto) return await WALLET.getOfflineSignerAuto(chainId);
+      if (WALLET?.getOfflineSigner)     return WALLET.getOfflineSigner(chainId);
+      if (window.getOfflineSignerAuto)  return await window.getOfflineSignerAuto(chainId);
+      if (window.getOfflineSigner)      return window.getOfflineSigner(chainId);
+      throw new Error("No compatible signer API from wallet.");
+    }
+
     async function hydrateAddresses(){
-      const cosSigner = window.getOfflineSignerAuto ? await window.getOfflineSignerAuto("cosmoshub-4")
-                                                    : window.getOfflineSigner("cosmoshub-4");
+      const cosSigner = await getSignerFor("cosmoshub-4");
       signer = cosSigner;
       const cosAcc = await pollAccounts(()=>signer.getAccounts(),"cosmos");
       cosmosAddr = cosAcc[0].address;
 
-      const osmoSigner = window.getOfflineSigner ? window.getOfflineSigner("osmosis-1")
-                                                 : await window.getOfflineSignerAuto("osmosis-1");
+      const osmoSigner = await getSignerFor("osmosis-1");
       const osmoAcc = await pollAccounts(()=>osmoSigner.getAccounts(),"osmosis");
       osmoAddr = osmoAcc[0].address;
 
       cosmosAddrEl.textContent = cosmosAddr;
       osmoAddrEl.textContent = osmoAddr;
+      walletNameEl.textContent = WALLET_NAME;
     }
+
     async function warmUpSigning(){
       const {SigningStargateClient}=window.cosmjs;
       signingClient = await withTimeout(SigningStargateClient.connectWithSigner(connectedRpc, signer, {
@@ -277,10 +381,7 @@
       await withTimeout(signingClient.getSequence(cosmosAddr), 8000, "account sequence");
     }
 
-    // ---------- Balance / Amount helpers ----------
-    function toHuman(min, dec=DEFAULT_DECIMALS){ return (Number(min||0)/Math.pow(10,dec)).toFixed(6); }
-    function toMinimal(h, dec=DEFAULT_DECIMALS){ return String(Math.round(Number(h)*Math.pow(10,dec))); }
-
+    // ---------- Balances ----------
     async function getIbcBalances(addr){
       const coins = await balancesWithRetries(addr);
       return coins.filter(c=>c.denom?.startsWith("ibc/") && BigInt(c.amount||"0")>0n);
@@ -306,6 +407,7 @@
     function updateSelected(){ const c=findSelectedCoin(); balHumanEl.textContent=toHuman(c.amount); quarkBadge.style.display=c.denom===QUARK_IBC?"inline-block":"none"; }
     function disableForm(dis){ denomSelect.disabled=dis; amountInput.disabled=dis; btn50.disabled=btn75.disabled=btnMax.disabled=dis; sendBtn.disabled=dis; memoInput.disabled=dis; }
 
+    // ---------- Send (with safe timeout & retries) ----------
     function wantRetry(msg){
       const m=(msg||"").toLowerCase();
       return m.includes("timeout") || (m.includes("insufficient")&&m.includes("fee")) || m.includes("out of gas") || m.includes("account sequence");
@@ -316,21 +418,32 @@
         attempt++;
         try{
           await withTimeout(signingClient.getSequence(cosmosAddr), 8000, "sequence");
+          // Safe absolute timeout: now + 20 min, in NANOseconds (uint64)
+          const timeoutNs = (BigInt(Date.now()) + 20n*60n*1000n) * 1_000_000n;
+
           const msg = {
             typeUrl:"/ibc.applications.transfer.v1.MsgTransfer",
             value:{ sourcePort:"transfer", sourceChannel:CHANNEL, sender:cosmosAddr, receiver:osmoAddr,
-                    token:{denom:coin.denom, amount:minimal}, timeoutHeight:{},
-                    timeoutTimestamp:String((Date.now()+20*60*1000)*1e6) }
+                    token:{denom:String(coin?.denom||""), amount:String(minimal)},
+                    timeoutTimestamp: timeoutNs.toString()
+                    // DO NOT include empty timeoutHeight
+            }
           };
+          if(!msg.value.token.denom) throw new Error("Selected denom is empty.");
+          if(!msg.value.token.amount) throw new Error("Amount is empty.");
+
           setStatus(attempt===1?"Simulating gas…":`Simulating gas… (retry ${attempt})`);
-          const gasEst = await withTimeout(signingClient.simulate(cosmosAddr,[msg],memo||""), 12000, "simulate");
+          const gasEst = await withTimeout(signingClient.simulate(cosmosAddr,[msg],(memo??"")), 12000, "simulate");
           const gas = Math.ceil(gasEst*GAS_BUFFER);
           const fee = {gas:String(gas), amount:[{denom:"uatom", amount:String(Math.ceil(gas*GAS_PRICE))}]};
+
           setStatus(attempt===1?"Broadcasting…":`Broadcasting… (retry ${attempt})`);
-          const res = await withTimeout(signingClient.signAndBroadcast(cosmosAddr,[msg],fee,memo||""), 20000, "broadcast");
+          const res = await withTimeout(signingClient.signAndBroadcast(cosmosAddr,[msg],fee,(memo??"")), 20000, "broadcast");
           if(res.code===0) return res;
           const raw = res.rawLog || `code ${res.code}`; if(!wantRetry(raw)) throw new Error(raw); lastErr=new Error(raw);
-        }catch(e){ const em=e?.message||String(e); if(!wantRetry(em)) throw e; lastErr=e; await sleep(1200*attempt); }
+        }catch(e){
+          const em=e?.message||String(e); if(!wantRetry(em)) throw e; lastErr=e; await sleep(1200*attempt);
+        }
       }
       throw lastErr||new Error("Broadcast failed.");
     }
@@ -339,20 +452,31 @@
     document.addEventListener("DOMContentLoaded", async ()=>{
       try{
         setStatus("Preparing wallet…");
-        await Promise.all([ensureCosmjsReady(), waitForKeplr()]);
-        connectBtn.innerHTML="Connect Keplr"; connectBtn.disabled=false; bootSpin.style.display="none";
+        await Promise.all([ensureCosmjsReady(), waitForAnyWallet()]);
+        populateWalletSelect();
+        connectBtn.innerHTML="Connect"; connectBtn.disabled=false; bootSpin.style.display="none";
         setStatus("Ready to connect.");
 
+        // Keystore change events (Keplr & Leap)
         window.addEventListener("keplr_keystorechange", async ()=>{
           if(!connected) return;
           try{
-            await enableChainsRobust();
-            await hydrateAddresses();
+            await enableChainsRobust(); await hydrateAddresses();
             setStatus("Account changed. Updating balances…");
             balances = await getIbcBalances(cosmosAddr);
             populateDropdown();
-            setStatus("Balances updated.", "ok");
+            setStatus("Balances updated.","ok");
           }catch(e){ addDiag("keystorechange refresh failed: "+(e?.message||e)); }
+        });
+        window.addEventListener("leap_keystorechange", async ()=>{
+          if(!connected) return;
+          try{
+            await enableChainsRobust(); await hydrateAddresses();
+            setStatus("Account changed. Updating balances…");
+            balances = await getIbcBalances(cosmosAddr);
+            populateDropdown();
+            setStatus("Balances updated.","ok");
+          }catch(e){ addDiag("leap keystorechange refresh failed: "+(e?.message||e)); }
         });
       }catch(e){ setStatus("❌ "+(e?.message||e), "err"); }
     });
@@ -371,82 +495,4 @@
     resetBtn.onclick = async ()=>{
       try{
         setStatus("Resetting…");
-        queryClient = null; signingClient = null; connected=false; connectInFlight=false;
-        addrWrap.style.display="none"; formWrap.style.display="none"; txWrap.style.display="none";
-        connectBtn.textContent="Connect Keplr"; connectBtn.disabled=false;
-        setStatus("Ready to connect.");
-      }catch{}
-    };
-
-    connectBtn.onclick = async ()=>{
-      try{
-        if(connectInFlight || connected) return;
-        connectInFlight = true;
-        connectBtn.disabled=true; connectBtn.innerHTML='<span class="spinner"></span>Connecting…';
-        setStatus("Requesting Keplr permission…");
-
-        await ensureCosmjsReady();
-        await waitForKeplr();
-        await enableChainsRobust();
-        await hydrateAddresses();
-
-        setStatus("Connecting RPC…");
-        await ensureQueryClient();
-
-        setStatus("Preparing signer…");
-        await warmUpSigning();
-
-        addrWrap.style.display="block";
-        formWrap.style.display="block";
-
-        setStatus("Fetching balances…");
-        balances = await getIbcBalances(cosmosAddr);
-        if(!balances.length) setStatus("No IBC balances found on Cosmos Hub.");
-        else { populateDropdown(); setStatus("Connected.","ok"); }
-
-        connected = true;
-        connectBtn.textContent = "Connected ✅";
-      }catch(e){
-        console.error(e);
-        setStatus("❌ "+(e?.message||e), "err");
-        connectBtn.textContent = "Connect Keplr"; connectBtn.disabled=false;
-      }finally{ connectInFlight=false; }
-    };
-
-    sendBtn.onclick = async ()=>{
-      try{
-        if(inFlight) return;
-        const human = Number((amountInput.value||"").trim());
-        if(!human || human<=0) return alert("Enter a valid amount.");
-
-        const coin = findSelectedCoin();
-        const minimal = toMinimal(human);
-        if(BigInt(minimal) > BigInt(coin.amount||"0")) return alert("Amount exceeds available balance.");
-
-        inFlight=true; disableForm(true); txWrap.style.display="none";
-        sendBtn.innerHTML='<span class="spinner"></span>Sending…'; setStatus("Preparing transaction…");
-
-        await enableChainsRobust(); // ensure permission if extension locked
-        const res = await sendIbcWithRetries(coin, minimal, memoInput.value||"");
-
-        setStatus("✅ Sent!","ok"); sendBtn.textContent="Send to Osmosis";
-        const hash = res.transactionHash||"";
-        if(hash){ txWrap.style.display="block"; txLink.href=`https://www.mintscan.io/cosmos/txs/${hash}`; }
-
-        setTimeout(async ()=>{
-          try{
-            const fresh = await balancesWithRetries(cosmosAddr);
-            const updated = fresh.find(x=>x.denom===coin.denom) || {amount:"0", denom:coin.denom};
-            coin.amount = updated.amount; updateSelected();
-          }catch(_){}
-        }, 2500);
-      }catch(e){
-        console.error(e);
-        setStatus("❌ "+(e?.message||e), "err"); sendBtn.textContent="Send to Osmosis";
-      }finally{
-        inFlight=false; disableForm(false);
-      }
-    };
-  </script>
-</body>
-</html>
+        queryClient = null; signin
