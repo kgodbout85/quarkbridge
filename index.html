@@ -33,10 +33,10 @@
     .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
     .stack{display:grid;gap:10px}
     label{font-size:13px;color:#cfd7ff;margin-bottom:6px;display:block}
-    input,select,button{width:100%;padding:12px;border-radius:12px;border:1px solid var(--border);background:#0c1330;color:var(--text);font-size:15px;outline:none;transition:box-shadow .2s,transform .02s}
+    input,select,button{width:100%;padding:12px;border-radius:12px;border:1px solid var(--border);background:#0c1330;color:#e9edff;font-size:15px;outline:none;transition:box-shadow .2s,transform .02s}
     input:focus,select:focus{box-shadow:0 0 0 2px #6d8bff66}
     button{background:linear-gradient(135deg,var(--accent-start),var(--accent-end));color:#0b0f26;font-weight:600;border:none}
-    button:hover{filter:brightness(1.05)} button:active{transform:scale(0.98)} button.ghost{background:transparent;color:var(--text);border:1px solid var(--border)}
+    button:hover{filter:brightness(1.05)} button:active{transform:scale(0.98)} button.ghost{background:transparent;color:#e9edff;border:1px solid var(--border)}
     button:disabled{opacity:.6;cursor:not-allowed}
     .status{color:var(--muted);min-height:20px} .status.ok{color:var(--ok)} .status.err{color:var(--err)}
     .addr{font-size:13px;color:#cdd6ff;background:#0c1330;border:1px dashed var(--border);padding:10px 12px;border-radius:12px}
@@ -51,7 +51,7 @@
     .warning b{color:#ffce6a}
   </style>
 
-  <!-- CosmJS UMD (primary + fallback). If blocked, we ESM-import in boot(). -->
+  <!-- CosmJS UMD (primary + fallback). If blocked, we ESM-import in code. -->
   <script>
     (function loadCosmjsUMD(){
       function add(src){const s=document.createElement("script");s.src=src;s.async=true;document.head.appendChild(s);}
@@ -77,15 +77,8 @@
       </div>
 
       <div class="row">
-        <div class="stack" style="min-width:200px;max-width:260px">
-          <label for="walletSelect">Wallet</label>
-          <select id="walletSelect">
-            <option value="">Select a wallet…</option>
-            <option value="keplr">Keplr</option>
-            <option value="leap">Leap</option>
-          </select>
-        </div>
-        <button id="connectBtn" type="button" disabled>Connect</button>
+        <button id="connectKeplr" type="button">Connect Keplr</button>
+        <button id="connectLeap"  type="button" class="ghost">Connect Leap</button>
         <span id="status" class="status"></span>
         <button id="refreshBtn" class="ghost right" type="button" style="display:none">↻ Refresh balances</button>
       </div>
@@ -137,13 +130,12 @@
   </div>
 
   <script>
-    // ===== Config & constants =====
-    const CHANNEL = "channel-141";     // Cosmos → Osmosis
+    // ===== Config =====
+    const CHANNEL = "channel-141";         // Cosmos → Osmosis
     const DEFAULT_DECIMALS = 6;
-    const GAS_PRICE = 0.035;           // uatom per gas
-    const GAS_BUFFER = 1.6;
-    const ACTION_GRACE_MS = 1500;      // ⏳ delay before enabling Send/% buttons
-    const CONNECT_TIMEOUT_MS = 15000;
+    const GAS_PRICE = 0.035;               // uatom per gas
+    const GAS_BUFFER = 1.6;                // 60% over simulate
+    const ACTION_GRACE_MS = 1200;          // delay before Send/% are enabled
     const RPC_CANDIDATES = [
       "https://rpc.cosmos.directory/cosmoshub",
       "https://rpc-cosmoshub.blockapsis.com",
@@ -154,41 +146,289 @@
     const QUARK_IBC = "ibc/7B6EBFC446E50DFF981C994E207BFB398889706C2B0DF8A14D8B87F6C0E33A1A";
 
     // ===== State =====
-    let WALLET_ID = "";   // "keplr" | "leap"
-    let WALLET = null;    // window.keplr or window.leap
-    let cosmosAddr = "", osmoAddr = "";
-    let signer = null, queryClient = null, signingClient = null, connectedRpc = "";
-    let balances = [];
-    let connectInFlight = false, connected = false, inFlight = false;
+    let WALLET_ID = "";           // "keplr" | "leap"
+    let WALLET = null;            // window.keplr or window.leap
+    let cosmosAddr="", osmoAddr="";
+    let signer=null, queryClient=null, signingClient=null, connectedRpc="";
+    let balances=[], connected=false, inFlight=false;
 
     // ===== UI =====
-    const walletSelect = document.getElementById("walletSelect");
-    const connectBtn  = document.getElementById("connectBtn");
-    const statusEl    = document.getElementById("status");
-    const addrWrap    = document.getElementById("addrWrap");
-    const walletNameEl= document.getElementById("walletName");
-    const cosmosAddrEl= document.getElementById("cosmosAddr");
-    const osmoAddrEl  = document.getElementById("osmoAddr");
-    const rpcUsedEl   = document.getElementById("rpcUsed");
-    const formWrap    = document.getElementById("formWrap");
-    const denomSelect = document.getElementById("denomSelect");
-    const amountInput = document.getElementById("amount");
-    const balHumanEl  = document.getElementById("balHuman");
-    const quarkBadge  = document.getElementById("quarkBadge");
-    const memoInput   = document.getElementById("memo");
-    const btn50       = document.getElementById("btn50");
-    const btn75       = document.getElementById("btn75");
-    const btnMax      = document.getElementById("btnMax");
-    const sendBtn     = document.getElementById("sendBtn");
-    const txWrap      = document.getElementById("txWrap");
-    const txLink      = document.getElementById("txLink");
-    const diagEl      = document.getElementById("diag");
-    const refreshBtn  = document.getElementById("refreshBtn");
+    const connectKeplr = document.getElementById("connectKeplr");
+    const connectLeap  = document.getElementById("connectLeap");
+    const statusEl     = document.getElementById("status");
+    const addrWrap     = document.getElementById("addrWrap");
+    const walletNameEl = document.getElementById("walletName");
+    const cosmosAddrEl = document.getElementById("cosmosAddr");
+    const osmoAddrEl   = document.getElementById("osmoAddr");
+    const rpcUsedEl    = document.getElementById("rpcUsed");
+    const formWrap     = document.getElementById("formWrap");
+    const denomSelect  = document.getElementById("denomSelect");
+    const amountInput  = document.getElementById("amount");
+    const balHumanEl   = document.getElementById("balHuman");
+    const quarkBadge   = document.getElementById("quarkBadge");
+    const memoInput    = document.getElementById("memo");
+    const btn50        = document.getElementById("btn50");
+    const btn75        = document.getElementById("btn75");
+    const btnMax       = document.getElementById("btnMax");
+    const sendBtn      = document.getElementById("sendBtn");
+    const refreshBtn   = document.getElementById("refreshBtn");
+    const txWrap       = document.getElementById("txWrap");
+    const txLink       = document.getElementById("txLink");
+    const diagEl       = document.getElementById("diag");
 
     // ===== Utils =====
     const sleep = (ms)=>new Promise(r=>setTimeout(r,ms));
-    const setStatus = (m,cls="")=>{ statusEl.className="status "+cls; statusEl.textContent=m||""; };
-    const addDiag = (m)=>{ const d=document.createElement("div"); d.textContent=m; diagEl.appendChild(d); };
+    const setStatus=(m,cls="")=>{ statusEl.className="status "+cls; statusEl.textContent=m||""; };
+    const addDiag=(m)=>{ const d=document.createElement("div"); d.textContent=m; diagEl.appendChild(d); };
     const withTimeout=(p,ms,label="op")=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error(label+" timed out")),ms))]);
-    const toHuman = (min,dec=DEFAULT_DECIMALS)=> (Number(min||0)/Math.pow(10,dec)).toFixed(6);
-    const toMinimal = (h,dec=DEFAULT_DECIMA_
+    const toHuman=(min,dec=DEFAULT_DECIMALS)=>(Number(min||0)/Math.pow(10,dec)).toFixed(6);
+    const toMinimal=(h,dec=DEFAULT_DECIMALS)=>String(Math.round(Number(h)*Math.pow(10,dec)));
+    function setActionsEnabled(en){
+      denomSelect.disabled=!en; amountInput.disabled=!en;
+      btn50.disabled=btn75.disabled=btnMax.disabled=!en; sendBtn.disabled=!en; memoInput.disabled=!en;
+    }
+    setActionsEnabled(false);
+
+    // ===== CosmJS =====
+    async function ensureCosmjsReady(){
+      const start=Date.now();
+      while(!window.cosmjs && Date.now()-start<2000) await sleep(100);
+      if(window.cosmjs) return;
+      try{
+        const mod = await import("https://esm.sh/@cosmjs/stargate@0.31.2?bundle");
+        window.cosmjs = {StargateClient:mod.StargateClient, SigningStargateClient:mod.SigningStargateClient};
+      }catch(e){ addDiag("ESM import failed: "+(e?.message||e)); throw new Error("CosmJS failed to load."); }
+    }
+
+    // ===== RPC =====
+    async function connectAnyRpc(){
+      const {StargateClient}=window.cosmjs;
+      for(const rpc of RPC_CANDIDATES){
+        try{
+          const c = await withTimeout(StargateClient.connect(rpc), 6000, "RPC connect");
+          await withTimeout(c.getHeight(), 4000, "RPC height");
+          connectedRpc = rpc; rpcUsedEl.textContent = rpc; return c;
+        }catch(e){ addDiag(`RPC failed: ${rpc} — ${e?.message||e}`); }
+      }
+      throw new Error("All Cosmos Hub RPCs failed.");
+    }
+    async function ensureQueryClient(){
+      try{ if(!queryClient){ queryClient=await connectAnyRpc(); } else { await withTimeout(queryClient.getHeight(), 4000, "RPC ping"); } }
+      catch(_){ queryClient=await connectAnyRpc(); }
+    }
+    async function balancesWithRetries(addr){
+      let last;
+      for(let i=0;i<3;i++){
+        try{
+          await ensureQueryClient();
+          const coins = await withTimeout(queryClient.getAllBalances(addr), 8000, "getAllBalances");
+          return coins||[];
+        }catch(e){ last=e; addDiag("balance fetch retry: "+(e?.message||e)); await sleep(600*(i+1)); queryClient=null; }
+      }
+      throw last||new Error("Failed to fetch balances.");
+    }
+
+    // ===== Wallet helpers =====
+    async function enableChains(){
+      if(!WALLET) throw new Error("No wallet selected.");
+      try{ await withTimeout(WALLET.enable(["cosmoshub-4","osmosis-1"]), 15000, "wallet enable"); }
+      catch(_){
+        await withTimeout(WALLET.enable("cosmoshub-4"), 15000, "enable cosmoshub-4");
+        await withTimeout(WALLET.enable("osmosis-1"), 15000, "enable osmosis-1");
+      }
+      if (WALLET.getKey) {
+        await withTimeout(WALLET.getKey("cosmoshub-4"), 8000, "getKey cosmos");
+        await withTimeout(WALLET.getKey("osmosis-1"), 8000, "getKey osmo");
+      }
+    }
+    async function getSignerFor(chainId){
+      if (WALLET?.getOfflineSignerAuto) return await WALLET.getOfflineSignerAuto(chainId);
+      if (WALLET?.getOfflineSigner)     return WALLET.getOfflineSigner(chainId);
+      if (window.getOfflineSignerAuto)  return await window.getOfflineSignerAuto(chainId);
+      if (window.getOfflineSigner)      return window.getOfflineSigner(chainId);
+      throw new Error("No signer API from wallet.");
+    }
+    async function hydrateAddresses(){
+      const cosSigner = await getSignerFor("cosmoshub-4");
+      signer = cosSigner;
+      const cosAccs = await withTimeout(signer.getAccounts(), 8000, "getAccounts cosmos");
+      cosmosAddr = cosAccs[0]?.address || "";
+      const osmoSigner = await getSignerFor("osmosis-1");
+      const osmoAccs = await withTimeout(osmoSigner.getAccounts(), 8000, "getAccounts osmosis");
+      osmoAddr = osmoAccs[0]?.address || "";
+      if(!cosmosAddr || !osmoAddr) throw new Error("Could not read accounts.");
+      cosmosAddrEl.textContent = cosmosAddr; osmoAddrEl.textContent = osmoAddr;
+    }
+    async function warmUpSigning(){
+      const {SigningStargateClient}=window.cosmjs;
+      signingClient = await withTimeout(SigningStargateClient.connectWithSigner(connectedRpc, signer, {
+        broadcastTimeoutMs: 60_000, broadcastPollIntervalMs: 3_000
+      }), 12000, "signing connect");
+      await withTimeout(signingClient.getSequence(cosmosAddr), 8000, "account seq");
+    }
+
+    // ===== Balances =====
+    async function getIbcBalances(addr){
+      const coins = await balancesWithRetries(addr);
+      return coins.filter(c=>c.denom?.startsWith("ibc/") && BigInt(c.amount||"0")>0n);
+    }
+    function populateDropdown(){
+      denomSelect.innerHTML = "";
+      balances.sort((a,b)=>a.denom.localeCompare(b.denom));
+      for(const c of balances){
+        const isQuark = c.denom===QUARK_IBC;
+        const opt = document.createElement("option");
+        opt.value = c.denom;
+        opt.textContent = `${isQuark ? "QUARK • " : ""}${c.denom} — ${toHuman(c.amount)}`;
+        denomSelect.appendChild(opt);
+      }
+      if(balances.length){
+        denomSelect.value = balances.find(x=>x.denom===QUARK_IBC)?.denom || balances[0].denom;
+        updateSelected();
+      }
+      refreshBtn.style.display = balances.length ? "inline-block" : "none";
+    }
+    const findSelected=()=> balances.find(c=>c.denom===denomSelect.value) || {amount:"0",denom:denomSelect.value};
+    function updateSelected(){ const c=findSelected(); balHumanEl.textContent=toHuman(c.amount); quarkBadge.style.display=c.denom===QUARK_IBC?"inline-block":"none"; }
+
+    // ===== Send (safe timeout) =====
+    function wantRetry(msg){ const m=(msg||"").toLowerCase(); return m.includes("timeout")||(m.includes("insufficient")&&m.includes("fee"))||m.includes("out of gas")||m.includes("account sequence"); }
+    async function sendIbcWithRetries(coin, minimal, memo){
+      let attempt=0,lastErr;
+      while(attempt<3){
+        attempt++;
+        try{
+          await withTimeout(signingClient.getSequence(cosmosAddr), 8000, "sequence");
+          const timeoutNs = (BigInt(Date.now()) + 20n*60n*1000n) * 1_000_000n; // now+20m in ns
+          const msg = {
+            typeUrl:"/ibc.applications.transfer.v1.MsgTransfer",
+            value:{ sourcePort:"transfer", sourceChannel:CHANNEL, sender:cosmosAddr, receiver:osmoAddr,
+                    token:{denom:String(coin?.denom||""), amount:String(minimal)},
+                    timeoutTimestamp: timeoutNs.toString() }
+          };
+          if(!msg.value.token.denom) throw new Error("Selected denom is empty.");
+          if(!msg.value.token.amount) throw new Error("Amount is empty.");
+
+          setStatus(attempt===1?"Simulating gas…":`Simulating gas… (retry ${attempt})`);
+          const gasEst = await withTimeout(signingClient.simulate(cosmosAddr,[msg],(memo??"")), 12000, "simulate");
+          const gas = Math.ceil(gasEst*GAS_BUFFER);
+          const fee = {gas:String(gas), amount:[{denom:"uatom", amount:String(Math.ceil(gas*GAS_PRICE))}]};
+
+          setStatus(attempt===1?"Broadcasting…":`Broadcasting… (retry ${attempt})`);
+          const res = await withTimeout(signingClient.signAndBroadcast(cosmosAddr,[msg],fee,(memo??"")), 20000, "broadcast");
+          if(res.code===0) return res;
+          const raw = res.rawLog || `code ${res.code}`; if(!wantRetry(raw)) throw new Error(raw); lastErr=new Error(raw);
+        }catch(e){ const em=e?.message||String(e); if(!wantRetry(em)) throw e; lastErr=e; await sleep(1000*attempt); }
+      }
+      throw lastErr||new Error("Broadcast failed.");
+    }
+
+    // ===== Button handlers =====
+    connectKeplr.onclick = ()=> startConnect("keplr");
+    connectLeap.onclick  = ()=> startConnect("leap");
+
+    async function startConnect(which){
+      try{
+        WALLET_ID = which;
+        WALLET = which==="keplr" ? window.keplr : window.leap;
+        walletNameEl.textContent = which==="keplr" ? "Keplr" : "Leap";
+
+        if(!WALLET){ setStatus(`❌ ${which==="keplr"?"Keplr":"Leap"} not found. Install/enable it.`, "err"); return; }
+
+        // Visual feedback
+        if(which==="keplr"){ connectKeplr.innerHTML='<span class="spinner"></span>Connecting…'; connectKeplr.disabled=true; connectLeap.disabled=true; }
+        else { connectLeap.innerHTML='<span class="spinner"></span>Connecting…'; connectLeap.disabled=true; connectKeplr.disabled=true; }
+        setStatus("Connecting…");
+
+        await ensureCosmjsReady();
+        await enableChains();
+        await ensureQueryClient();
+        await hydrateAddresses();
+        await warmUpSigning();
+
+        addrWrap.style.display="block";
+        formWrap.style.display="block";
+
+        setStatus("Fetching balances…");
+        balances = await getIbcBalances(cosmosAddr);
+        populateDropdown();
+
+        // Grace delay so Send/% aren’t clickable immediately (prevents double-press bug)
+        setActionsEnabled(false);
+        await sleep(ACTION_GRACE_MS);
+        setActionsEnabled(true);
+
+        connected = true;
+        if(which==="keplr"){ connectKeplr.textContent="Connected via Keplr ✅"; }
+        else { connectLeap.textContent="Connected via Leap ✅"; }
+        setStatus("Connected.","ok");
+
+        // keystore change
+        window.addEventListener("keplr_keystorechange", keystoreRefresh);
+        window.addEventListener("leap_keystorechange",  keystoreRefresh);
+      }catch(e){
+        console.error(e);
+        setStatus("❌ "+(e?.message||e), "err");
+        // re-enable buttons on failure
+        connectKeplr.textContent="Connect Keplr"; connectLeap.textContent="Connect Leap";
+        connectKeplr.disabled=false; connectLeap.disabled=false;
+      }
+    }
+
+    async function keystoreRefresh(){
+      if(!connected) return;
+      try{
+        setStatus("Account changed. Refreshing…");
+        await enableChains(); await hydrateAddresses();
+        balances = await getIbcBalances(cosmosAddr);
+        populateDropdown();
+        setStatus("Balances updated.","ok");
+      }catch(e){ addDiag("keystorechange failed: "+(e?.message||e)); }
+    }
+
+    // UI events
+    denomSelect.onchange = updateSelected;
+    btn50.onclick = ()=>{ const c=findSelected(); const v=(BigInt(c.amount)*50n)/100n; amountInput.value=toHuman(v.toString()); };
+    btn75.onclick = ()=>{ const c=findSelected(); const v=(BigInt(c.amount)*75n)/100n; amountInput.value=toHuman(v.toString()); };
+    btnMax.onclick = ()=>{ const c=findSelected(); amountInput.value=toHuman(c.amount); };
+
+    refreshBtn.onclick = async ()=>{
+      try{ setStatus("Refreshing balances…"); balances = await getIbcBalances(cosmosAddr); populateDropdown(); setStatus("Balances updated.","ok"); }
+      catch(e){ setStatus("❌ "+(e?.message||e), "err"); }
+    };
+
+    sendBtn.onclick = async ()=>{
+      try{
+        if(inFlight) return;
+        const human = Number((amountInput.value||"").trim());
+        if(!human || human<=0) return alert("Enter a valid amount.");
+        const coin = findSelected();
+        const minimal = toMinimal(human);
+        if(BigInt(minimal) > BigInt(coin.amount||"0")) return alert("Amount exceeds available balance.");
+
+        inFlight=true; setActionsEnabled(false); txWrap.style.display="none";
+        sendBtn.innerHTML='<span class="spinner"></span>Sending…'; setStatus("Preparing transaction…");
+
+        try{ await enableChains(); }catch(_){}
+        const res = await sendIbcWithRetries(coin, minimal, memoInput.value||"");
+
+        const hash = res.transactionHash||"";
+        if(hash){ txWrap.style.display="block"; txLink.href=`https://www.mintscan.io/cosmos/txs/${hash}`; }
+        setStatus("✅ Sent!","ok"); sendBtn.textContent="Send to Osmosis";
+
+        setTimeout(async ()=>{
+          try{
+            const fresh = await balancesWithRetries(cosmosAddr);
+            const updated = fresh.find(x=>x.denom===coin.denom) || {amount:"0", denom:coin.denom};
+            coin.amount = updated.amount; updateSelected();
+          }catch(_){}
+        }, 2500);
+        await sleep(700);
+      }catch(e){
+        console.error(e);
+        setStatus("❌ "+(e?.message||e), "err"); sendBtn.textContent="Send to Osmosis";
+      }finally{ inFlight=false; setActionsEnabled(true); }
+    };
+  </script>
+</body>
+</html>
