@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Quark IBC Bridge → Osmosis (channel-141)</title>
 
-  <!-- Performance & reliability hints -->
   <link rel="preconnect" href="https://unpkg.com" crossorigin>
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
   <link rel="preconnect" href="https://rpc.cosmos.directory" crossorigin>
@@ -14,7 +13,7 @@
     :root{
       --bg-1:#070a16; --bg-2:#0b1140; --card:#0f1633cc; --border:#1f2a66;
       --text:#e9edff; --muted:#aab3da; --accent-start:#7cfbff; --accent-end:#6d8bff;
-      --ok:#34d399; --err:#ffb4c2; --warn:#f59e0b;
+      --ok:#34d399; --err:#ffb4c2;
     }
     *{box-sizing:border-box} html,body{height:100%}
     body{
@@ -45,12 +44,10 @@
     .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
     .divider{height:1px;background:linear-gradient(90deg,transparent,#263376 30%,#263376 70%,transparent);margin:10px 0}
     .pill{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;background:#101a48;border:1px solid #263376;color:#bcd0ff;font-size:12px}
-    .badge{background:#223066;border:1px solid #2d3c7a;padding:2px 8px;border-radius:999px;font-size:11px;margin-left:6px;color:#bcd0ff}
+    .badge{background:#223066;border:1px solid #2d3a7a;padding:2px 8px;border-radius:999px;font-size:11px;margin-left:6px;color:#bcd0ff}
     .spinner{width:16px;height:16px;border-radius:50%;border:2px solid #ffffff55;border-top-color:#fff;animation:spin .8s linear infinite;display:inline-block;vertical-align:middle;margin-right:8px}
     @keyframes spin{to{transform:rotate(360deg)}}
-    details.diag summary{cursor:pointer;color:#9fb2ff} details.diag{font-size:12px;color:#aab3da}
-    /* Warning banner */
-    .warning{display:flex;gap:10px;align-items:flex-start;background:#2a1600;border:1px solid #7c4a00;color:#ffd59e;padding:10px 12px;border-radius:12px}
+    .warning{display:flex;gap:10px;align-items:flex-start;background:#2a1600;border:1px solid #7c4a00;color:#ffd59e;padding:10px 12px;border-radius:12px;margin-bottom:10px}
     .warning b{color:#ffce6a}
   </style>
 
@@ -79,17 +76,18 @@
         <div><b>Use at your own risk.</b> Not responsible for any lost funds. Always test with a small amount first.</div>
       </div>
 
-      <div class="row" style="margin-top:10px">
-        <div class="stack" style="min-width:180px;max-width:240px">
+      <div class="row">
+        <div class="stack" style="min-width:200px;max-width:260px">
           <label for="walletSelect">Wallet</label>
-          <select id="walletSelect" disabled>
-            <option value="auto">Detecting…</option>
+          <select id="walletSelect">
+            <option value="">Select a wallet…</option>
+            <option value="keplr">Keplr</option>
+            <option value="leap">Leap</option>
           </select>
         </div>
-        <button id="connectBtn" type="button" disabled><span class="spinner" id="bootSpin"></span>Initializing…</button>
+        <button id="connectBtn" type="button" disabled>Connect</button>
         <span id="status" class="status"></span>
         <button id="refreshBtn" class="ghost right" type="button" style="display:none">↻ Refresh balances</button>
-        <button id="resetBtn" class="ghost" type="button" style="display:none">Reset</button>
       </div>
 
       <div id="addrWrap" class="addr" style="display:none">
@@ -135,17 +133,17 @@
       <details class="diag"><summary>Diagnostics</summary><div id="diag" class="status"></div></details>
     </div>
 
-    <div class="footer">Tip: serve over <b>https://</b>, allow Keplr/Leap on this site, and avoid aggressive ad-blockers on first load.</div>
+    <div class="footer">Tip: serve over <b>https://</b> and allow your wallet on this site.</div>
   </div>
 
   <script>
-    // ---------- Config ----------
-    const CHANNEL = "channel-141";               // Cosmos → Osmosis
+    // ===== Config & constants =====
+    const CHANNEL = "channel-141";     // Cosmos → Osmosis
     const DEFAULT_DECIMALS = 6;
-    const GAS_PRICE = 0.035;                     // uatom per gas
-    const GAS_BUFFER = 1.6;                      // 60% over simulate
-    const QUARK_IBC = "ibc/7B6EBFC446E50DFF981C994E207BFB398889706C2B0DF8A14D8B87F6C0E33A1A";
-
+    const GAS_PRICE = 0.035;           // uatom per gas
+    const GAS_BUFFER = 1.6;
+    const ACTION_GRACE_MS = 1500;      // ⏳ delay before enabling Send/% buttons
+    const CONNECT_TIMEOUT_MS = 15000;
     const RPC_CANDIDATES = [
       "https://rpc.cosmos.directory/cosmoshub",
       "https://rpc-cosmoshub.blockapsis.com",
@@ -153,28 +151,22 @@
       "https://rpc.cosmoshub.strange.love",
       "https://rpc-cosmoshub-ia.cosmosia.notional.ventures",
     ];
+    const QUARK_IBC = "ibc/7B6EBFC446E50DFF981C994E207BFB398889706C2B0DF8A14D8B87F6C0E33A1A";
 
-    // ---------- State ----------
+    // ===== State =====
+    let WALLET_ID = "";   // "keplr" | "leap"
+    let WALLET = null;    // window.keplr or window.leap
     let cosmosAddr = "", osmoAddr = "";
-    let connectedRpc = "";
-    let queryClient = null;        // StargateClient
-    let signingClient = null;      // SigningStargateClient
-    let signer = null;
+    let signer = null, queryClient = null, signingClient = null, connectedRpc = "";
     let balances = [];
     let connectInFlight = false, connected = false, inFlight = false;
 
-    // Wallet provider (Keplr/Leap)
-    let WALLET = null;             // object: window.keplr or window.leap
-    let WALLET_ID = "auto";        // "keplr" | "leap"
-    let WALLET_NAME = "—";
-
-    // ---------- UI ----------
+    // ===== UI =====
     const walletSelect = document.getElementById("walletSelect");
-    const walletNameEl = document.getElementById("walletName");
     const connectBtn  = document.getElementById("connectBtn");
-    const bootSpin    = document.getElementById("bootSpin");
     const statusEl    = document.getElementById("status");
     const addrWrap    = document.getElementById("addrWrap");
+    const walletNameEl= document.getElementById("walletName");
     const cosmosAddrEl= document.getElementById("cosmosAddr");
     const osmoAddrEl  = document.getElementById("osmoAddr");
     const rpcUsedEl   = document.getElementById("rpcUsed");
@@ -184,315 +176,19 @@
     const balHumanEl  = document.getElementById("balHuman");
     const quarkBadge  = document.getElementById("quarkBadge");
     const memoInput   = document.getElementById("memo");
-    const btn50 = document.getElementById("btn50");
-    const btn75 = document.getElementById("btn75");
-    const btnMax = document.getElementById("btnMax");
-    const sendBtn = document.getElementById("sendBtn");
-    const txWrap = document.getElementById("txWrap");
-    const txLink = document.getElementById("txLink");
-    const diagEl = document.getElementById("diag");
-    const refreshBtn = document.getElementById("refreshBtn");
-    const resetBtn = document.getElementById("resetBtn");
+    const btn50       = document.getElementById("btn50");
+    const btn75       = document.getElementById("btn75");
+    const btnMax      = document.getElementById("btnMax");
+    const sendBtn     = document.getElementById("sendBtn");
+    const txWrap      = document.getElementById("txWrap");
+    const txLink      = document.getElementById("txLink");
+    const diagEl      = document.getElementById("diag");
+    const refreshBtn  = document.getElementById("refreshBtn");
 
-    // ---------- Utils ----------
+    // ===== Utils =====
     const sleep = (ms)=>new Promise(r=>setTimeout(r,ms));
-    const addDiag = (m)=>{ const d=document.createElement("div"); d.textContent=m; diagEl.appendChild(d); };
     const setStatus = (m,cls="")=>{ statusEl.className="status "+cls; statusEl.textContent=m||""; };
+    const addDiag = (m)=>{ const d=document.createElement("div"); d.textContent=m; diagEl.appendChild(d); };
     const withTimeout=(p,ms,label="op")=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error(label+" timed out")),ms))]);
-
-    function toHuman(min, dec=DEFAULT_DECIMALS){ return (Number(min||0)/Math.pow(10,dec)).toFixed(6); }
-    function toMinimal(h, dec=DEFAULT_DECIMALS){ return String(Math.round(Number(h)*Math.pow(10,dec))); }
-
-    // ---------- Wallet detection & selection ----------
-    function detectWallets(){
-      const list = [];
-      if (window.keplr) list.push({ id:"keplr", name:"Keplr", obj: window.keplr });
-      if (window.leap)  list.push({ id:"leap",  name:"Leap",  obj: window.leap  });
-      return list;
-    }
-
-    function setWalletById(id){
-      const found = id==="keplr" ? window.keplr : id==="leap" ? window.leap : null;
-      WALLET_ID = id;
-      WALLET = found;
-      WALLET_NAME = found ? (id==="keplr" ? "Keplr" : "Leap") : "—";
-      walletNameEl.textContent = WALLET_NAME;
-    }
-
-    async function waitForAnyWallet(timeoutMs=15000){
-      const start = Date.now();
-      while (Date.now() - start < timeoutMs) {
-        if (window.keplr || window.leap) return;
-        await sleep(100);
-      }
-      throw new Error("No Cosmos wallet detected (Keplr/Leap).");
-    }
-
-    function populateWalletSelect(){
-      const wallets = detectWallets();
-      walletSelect.innerHTML = "";
-      if (wallets.length === 0) {
-        const opt = document.createElement("option");
-        opt.value = "none"; opt.textContent = "No wallet detected";
-        walletSelect.appendChild(opt);
-        walletSelect.disabled = true;
-        return;
-      }
-      for (const w of wallets) {
-        const opt = document.createElement("option");
-        opt.value = w.id; opt.textContent = w.name;
-        walletSelect.appendChild(opt);
-      }
-      // Prefer Keplr if both present
-      const defaultId = wallets.find(w=>w.id==="keplr") ? "keplr" : wallets[0].id;
-      walletSelect.value = defaultId;
-      walletSelect.disabled = false;
-      setWalletById(defaultId);
-    }
-
-    walletSelect.onchange = ()=>{
-      setWalletById(walletSelect.value);
-      // On wallet switch, if connected, prompt re-enable and refresh balances
-      if (connected) {
-        (async ()=>{
-          try{
-            setStatus("Switching wallet…");
-            await enableChainsRobust();
-            await hydrateAddresses();
-            balances = await getIbcBalances(cosmosAddr);
-            populateDropdown();
-            setStatus("Wallet switched.", "ok");
-          }catch(e){ setStatus("❌ "+(e?.message||e), "err"); }
-        })();
-      }
-    };
-
-    // ---------- CosmJS readiness ----------
-    async function ensureCosmjsReady(){
-      const start=Date.now();
-      while(!window.cosmjs && Date.now()-start<3000) await sleep(100);
-      if(window.cosmjs) return;
-      try{
-        const mod = await import("https://esm.sh/@cosmjs/stargate@0.31.2?bundle");
-        window.cosmjs = {StargateClient:mod.StargateClient, SigningStargateClient:mod.SigningStargateClient};
-      }catch(e){ addDiag("ESM import failed: "+(e?.message||e)); throw new Error("CosmJS failed to load."); }
-    }
-
-    // ---------- RPC / Clients ----------
-    async function connectAnyRpc(){
-      const {StargateClient}=window.cosmjs;
-      for(const rpc of RPC_CANDIDATES){
-        try{
-          const c = await withTimeout(StargateClient.connect(rpc), 6000, "RPC connect");
-          await withTimeout(c.getHeight(), 4000, "RPC height");
-          connectedRpc = rpc; rpcUsedEl.textContent = rpc; return c;
-        }catch(e){ addDiag(`RPC failed: ${rpc} — ${e?.message||e}`); }
-      }
-      throw new Error("All Cosmos Hub RPCs failed (CORS/offline).");
-    }
-    async function ensureQueryClient(){
-      try{
-        if(!queryClient){ queryClient = await connectAnyRpc(); }
-        else { await withTimeout(queryClient.getHeight(), 4000, "RPC ping"); }
-      }catch(_){ queryClient = await connectAnyRpc(); }
-    }
-    async function balancesWithRetries(addr){
-      let last;
-      for(let i=0;i<3;i++){
-        try{
-          await ensureQueryClient();
-          const coins = await withTimeout(queryClient.getAllBalances(addr), 8000, "getAllBalances");
-          return coins||[];
-        }catch(e){ last=e; addDiag("balance fetch retry: "+(e?.message||e)); await sleep(600*(i+1)); queryClient=null; }
-      }
-      throw last||new Error("Failed to fetch balances.");
-    }
-
-    // ---------- Wallet helpers (Keplr/Leap compatible) ----------
-    async function enableChainsRobust(){
-      if (!WALLET) throw new Error("No wallet selected.");
-      // Try multi-enable first; fall back to sequential
-      if (WALLET.enable) {
-        try {
-          await withTimeout(WALLET.enable(["cosmoshub-4","osmosis-1"]), 15000, "Wallet enable");
-        } catch(_) {
-          await withTimeout(WALLET.enable("cosmoshub-4"), 15000, "Enable cosmoshub-4");
-          await withTimeout(WALLET.enable("osmosis-1"), 15000, "Enable osmosis-1");
-        }
-      } else {
-        // Extremely old injectors: use global enable if present
-        if (window.keplr?.enable || window.leap?.enable) {
-          try { await withTimeout((window.keplr||window.leap).enable(["cosmoshub-4","osmosis-1"]), 15000, "Wallet enable"); }
-          catch(_) {
-            await withTimeout((window.keplr||window.leap).enable("cosmoshub-4"), 15000, "Enable cosmoshub-4");
-            await withTimeout((window.keplr||window.leap).enable("osmosis-1"), 15000, "Enable osmosis-1");
-          }
-        } else {
-          throw new Error("Wallet does not support enable().");
-        }
-      }
-
-      // Hydrate keys (prevents empty account race)
-      if (WALLET.getKey) {
-        await withTimeout(WALLET.getKey("cosmoshub-4"), 8000, "getKey cosmos");
-        await withTimeout(WALLET.getKey("osmosis-1"), 8000, "getKey osmo");
-      }
-    }
-
-    async function pollAccounts(getter, label){
-      const start=Date.now();
-      while(Date.now()-start<8000){
-        const accs = await withTimeout(getter(), 4000, "getAccounts "+label);
-        if(accs && accs.length>0) return accs;
-        await sleep(200);
-      }
-      throw new Error(label+" accounts not available");
-    }
-
-    async function getSignerFor(chainId){
-      // Prefer wallet-scoped methods, then fall back to globals
-      if (WALLET?.getOfflineSignerAuto) return await WALLET.getOfflineSignerAuto(chainId);
-      if (WALLET?.getOfflineSigner)     return WALLET.getOfflineSigner(chainId);
-      if (window.getOfflineSignerAuto)  return await window.getOfflineSignerAuto(chainId);
-      if (window.getOfflineSigner)      return window.getOfflineSigner(chainId);
-      throw new Error("No compatible signer API from wallet.");
-    }
-
-    async function hydrateAddresses(){
-      const cosSigner = await getSignerFor("cosmoshub-4");
-      signer = cosSigner;
-      const cosAcc = await pollAccounts(()=>signer.getAccounts(),"cosmos");
-      cosmosAddr = cosAcc[0].address;
-
-      const osmoSigner = await getSignerFor("osmosis-1");
-      const osmoAcc = await pollAccounts(()=>osmoSigner.getAccounts(),"osmosis");
-      osmoAddr = osmoAcc[0].address;
-
-      cosmosAddrEl.textContent = cosmosAddr;
-      osmoAddrEl.textContent = osmoAddr;
-      walletNameEl.textContent = WALLET_NAME;
-    }
-
-    async function warmUpSigning(){
-      const {SigningStargateClient}=window.cosmjs;
-      signingClient = await withTimeout(SigningStargateClient.connectWithSigner(connectedRpc, signer, {
-        broadcastTimeoutMs: 60_000, broadcastPollIntervalMs: 3_000
-      }), 12000, "signing connect");
-      await withTimeout(signingClient.getSequence(cosmosAddr), 8000, "account sequence");
-    }
-
-    // ---------- Balances ----------
-    async function getIbcBalances(addr){
-      const coins = await balancesWithRetries(addr);
-      return coins.filter(c=>c.denom?.startsWith("ibc/") && BigInt(c.amount||"0")>0n);
-    }
-    function populateDropdown(){
-      denomSelect.innerHTML = "";
-      balances.sort((a,b)=>a.denom.localeCompare(b.denom));
-      for(const c of balances){
-        const isQuark = c.denom===QUARK_IBC;
-        const opt = document.createElement("option");
-        opt.value = c.denom;
-        opt.textContent = `${isQuark ? "QUARK • " : ""}${c.denom} — ${toHuman(c.amount)}`;
-        denomSelect.appendChild(opt);
-      }
-      if(balances.length){
-        denomSelect.value = balances.find(x=>x.denom===QUARK_IBC)?.denom || balances[0].denom;
-        updateSelected();
-      }
-      refreshBtn.style.display = balances.length ? "inline-block" : "none";
-      resetBtn.style.display = "inline-block";
-    }
-    const findSelectedCoin = ()=> balances.find(c=>c.denom===denomSelect.value) || {amount:"0",denom:denomSelect.value};
-    function updateSelected(){ const c=findSelectedCoin(); balHumanEl.textContent=toHuman(c.amount); quarkBadge.style.display=c.denom===QUARK_IBC?"inline-block":"none"; }
-    function disableForm(dis){ denomSelect.disabled=dis; amountInput.disabled=dis; btn50.disabled=btn75.disabled=btnMax.disabled=dis; sendBtn.disabled=dis; memoInput.disabled=dis; }
-
-    // ---------- Send (with safe timeout & retries) ----------
-    function wantRetry(msg){
-      const m=(msg||"").toLowerCase();
-      return m.includes("timeout") || (m.includes("insufficient")&&m.includes("fee")) || m.includes("out of gas") || m.includes("account sequence");
-    }
-    async function sendIbcWithRetries(coin, minimal, memo){
-      let attempt=0,lastErr;
-      while(attempt<3){
-        attempt++;
-        try{
-          await withTimeout(signingClient.getSequence(cosmosAddr), 8000, "sequence");
-          // Safe absolute timeout: now + 20 min, in NANOseconds (uint64)
-          const timeoutNs = (BigInt(Date.now()) + 20n*60n*1000n) * 1_000_000n;
-
-          const msg = {
-            typeUrl:"/ibc.applications.transfer.v1.MsgTransfer",
-            value:{ sourcePort:"transfer", sourceChannel:CHANNEL, sender:cosmosAddr, receiver:osmoAddr,
-                    token:{denom:String(coin?.denom||""), amount:String(minimal)},
-                    timeoutTimestamp: timeoutNs.toString()
-                    // DO NOT include empty timeoutHeight
-            }
-          };
-          if(!msg.value.token.denom) throw new Error("Selected denom is empty.");
-          if(!msg.value.token.amount) throw new Error("Amount is empty.");
-
-          setStatus(attempt===1?"Simulating gas…":`Simulating gas… (retry ${attempt})`);
-          const gasEst = await withTimeout(signingClient.simulate(cosmosAddr,[msg],(memo??"")), 12000, "simulate");
-          const gas = Math.ceil(gasEst*GAS_BUFFER);
-          const fee = {gas:String(gas), amount:[{denom:"uatom", amount:String(Math.ceil(gas*GAS_PRICE))}]};
-
-          setStatus(attempt===1?"Broadcasting…":`Broadcasting… (retry ${attempt})`);
-          const res = await withTimeout(signingClient.signAndBroadcast(cosmosAddr,[msg],fee,(memo??"")), 20000, "broadcast");
-          if(res.code===0) return res;
-          const raw = res.rawLog || `code ${res.code}`; if(!wantRetry(raw)) throw new Error(raw); lastErr=new Error(raw);
-        }catch(e){
-          const em=e?.message||String(e); if(!wantRetry(em)) throw e; lastErr=e; await sleep(1200*attempt);
-        }
-      }
-      throw lastErr||new Error("Broadcast failed.");
-    }
-
-    // ---------- Boot ----------
-    document.addEventListener("DOMContentLoaded", async ()=>{
-      try{
-        setStatus("Preparing wallet…");
-        await Promise.all([ensureCosmjsReady(), waitForAnyWallet()]);
-        populateWalletSelect();
-        connectBtn.innerHTML="Connect"; connectBtn.disabled=false; bootSpin.style.display="none";
-        setStatus("Ready to connect.");
-
-        // Keystore change events (Keplr & Leap)
-        window.addEventListener("keplr_keystorechange", async ()=>{
-          if(!connected) return;
-          try{
-            await enableChainsRobust(); await hydrateAddresses();
-            setStatus("Account changed. Updating balances…");
-            balances = await getIbcBalances(cosmosAddr);
-            populateDropdown();
-            setStatus("Balances updated.","ok");
-          }catch(e){ addDiag("keystorechange refresh failed: "+(e?.message||e)); }
-        });
-        window.addEventListener("leap_keystorechange", async ()=>{
-          if(!connected) return;
-          try{
-            await enableChainsRobust(); await hydrateAddresses();
-            setStatus("Account changed. Updating balances…");
-            balances = await getIbcBalances(cosmosAddr);
-            populateDropdown();
-            setStatus("Balances updated.","ok");
-          }catch(e){ addDiag("leap keystorechange refresh failed: "+(e?.message||e)); }
-        });
-      }catch(e){ setStatus("❌ "+(e?.message||e), "err"); }
-    });
-
-    // ---------- Events ----------
-    denomSelect.onchange = updateSelected;
-    btn50.onclick = ()=>{ const c=findSelectedCoin(); const half=(BigInt(c.amount)*50n)/100n; amountInput.value = toHuman(half.toString()); };
-    btn75.onclick = ()=>{ const c=findSelectedCoin(); const three=(BigInt(c.amount)*75n)/100n; amountInput.value = toHuman(three.toString()); };
-    btnMax.onclick = ()=>{ const c=findSelectedCoin(); amountInput.value = toHuman(c.amount); };
-
-    refreshBtn.onclick = async ()=>{
-      try{ setStatus("Refreshing balances…"); balances = await getIbcBalances(cosmosAddr); populateDropdown(); setStatus("Balances updated.","ok"); }
-      catch(e){ setStatus("❌ "+(e?.message||e), "err"); }
-    };
-
-    resetBtn.onclick = async ()=>{
-      try{
-        setStatus("Resetting…");
-        queryClient = null; signin
+    const toHuman = (min,dec=DEFAULT_DECIMALS)=> (Number(min||0)/Math.pow(10,dec)).toFixed(6);
+    const toMinimal = (h,dec=DEFAULT_DECIMA_
